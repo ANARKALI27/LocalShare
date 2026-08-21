@@ -18,6 +18,7 @@ from app.network.ip import find_available_port, get_lan_ip
 from app.server.messages import MessageStore
 from app.server.routes import build_router
 from app.state import ShareManager
+from app.transfer.resumable import ResumableUploadManager
 
 
 class ServerHandle:
@@ -40,6 +41,7 @@ class ServerHandle:
         self.host: str | None = None
         self.port: int | None = None
         self.message_store: MessageStore | None = None
+        self.resumable_manager: ResumableUploadManager | None = None
 
     @property
     def is_running(self) -> bool:
@@ -63,9 +65,10 @@ class ServerHandle:
         self.host = get_lan_ip()
         self.port = find_available_port(self.preferred_port)
         self.message_store = MessageStore()
+        self.resumable_manager = ResumableUploadManager()
 
         app = FastAPI(title="LocalShare")
-        app.include_router(build_router(self.share_manager, self.message_store))
+        app.include_router(build_router(self.share_manager, self.message_store, self.resumable_manager))
 
         config = uvicorn.Config(
             app,
@@ -96,8 +99,11 @@ class ServerHandle:
             self._thread.join(timeout=5)
         if self.message_store is not None:
             self.message_store.cleanup()
+        if self.resumable_manager is not None:
+            self.resumable_manager.cleanup()
         self._server = None
         self._thread = None
         self.host = None
         self.port = None
         self.message_store = None
+        self.resumable_manager = None

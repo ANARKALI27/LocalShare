@@ -31,6 +31,7 @@ from app.transfer.download import (
     stream_file,
     stream_file_range,
 )
+from app.transfer.resumable import ResumableUploadManager
 from app.transfer.upload import resolve_upload_path, save_upload
 from app.utils.filesystem import list_directory
 
@@ -121,7 +122,9 @@ def _file_stream_response(request: Request, target: str, name: str, inline: bool
     return StreamingResponse(stream_file(target), media_type=media_type, headers=headers)
 
 
-def build_router(share_manager: ShareManager, message_store: MessageStore) -> APIRouter:
+def build_router(
+    share_manager: ShareManager, message_store: MessageStore, resumable_manager: ResumableUploadManager
+) -> APIRouter:
     router = APIRouter()
 
     # -- browser UI shell -----------------------------------------------------------
@@ -338,6 +341,70 @@ def build_router(share_manager: ShareManager, message_store: MessageStore) -> AP
             "failed": len(failed),
             "results": results,
         }
+
+    # -- resumable uploads (for large files — see resumable.py) -----------------
+    @router.post("/api/upload/start")
+    def start_resumable_upload(
+        item: str = Form(...),
+        path: str = Form(default=""),
+        filename: str = Form(...),
+        relative_path: str = Form(default=""),
+        total_size: int = Form(...),
+    ) -> dict:
+        if not item:
+            raise HTTPException(
+                status_code=400, detail="Choose a shared folder before uploading — can't upload to Home"
+            )
+        target_dir, _name = _resolve_target(share_manager, item, path)
+        if not os.path.isdir(target_dir):
+            raise HTTPException(status_code=400, detail="Upload destination must be a folder")
+        if total_size < 0:
+            raise HTTPException(status_code=400, detail="Invalid total_size")
+
+        session = resumable_manager.start_session(
+            item, target_dir, relative_path or filename, total_size
+        )
+        return {"upload_id": session.id, "bytes_received": 0, "total_size": total_size}
+
+    @router.get("/api/upload/status/{upload_id}")
+    def resumable_upload_status(upload_id: str) -> dict:
+        session = resumable_manager.get(upload_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Unknown or expired upload session")
+        return {
+            "bytes_received": session.bytes_received,
+            "total_size": session.total_size,
+            "finalized": session.finalized,
+        }
+
+    @router.put("/api/upload/chunk/{upload_id}")
+    async def upload_chunk(upload_id: str, request: Request, offset: int = Query(...)) -> dict:
+        data = await request.body()
+        try:
+            session = resumable_manager.write_chunk(upload_id, offset, data)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown or expired upload session")
+        except ValueError as exc:
+            # 409 Conflict: the client's idea of progress doesn't match the
+            # server's — it should re-check /status and retry from there,
+            # not treat this as a fatal error.
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"bytes_received": session.bytes_received}
+
+    @router.post("/api/upload/finalize/{upload_id}")
+    def finalize_resumable_upload(upload_id: str) -> dict:
+        try:
+            final_path = resumable_manager.finalize(upload_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown or expired upload session")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"ok": True, "name": os.path.basename(final_path)}
+
+    @router.delete("/api/upload/{upload_id}")
+    def cancel_resumable_upload(upload_id: str) -> dict:
+        resumable_manager.cancel(upload_id)
+        return {"ok": True}
 
     # -- private messages -----------------------------------------------------------
     @router.get("/api/messages")

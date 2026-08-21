@@ -178,47 +178,151 @@ async function loadListing(item, path) {
   }
 }
 
+// Chunk size for resumable uploads. Small enough to keep memory light
+// and give frequent progress updates; large enough not to drown small
+// LANs in per-request overhead.
+const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+
+function uploadFingerprintKey(item, path, relativePath, file) {
+  return `localshare_upload::${item}::${path}::${relativePath}::${file.size}::${file.lastModified}`;
+}
+
+/**
+ * Uploads one file using the chunked resumable protocol. If a matching
+ * in-progress upload was left over from a previous attempt (tracked by
+ * fingerprint in localStorage), resumes from wherever the SERVER says
+ * it actually got to — never trusts the client's own memory of
+ * progress, since that's exactly what can be wrong after a crash/reload.
+ */
+async function uploadFileResumable(file, relativePath, item, path, onProgress) {
+  const fpKey = uploadFingerprintKey(item, path, relativePath, file);
+  let uploadId = localStorage.getItem(fpKey);
+  let bytesReceived = 0;
+
+  if (uploadId) {
+    try {
+      const statusRes = await fetch(`/api/upload/status/${uploadId}`);
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        if (!status.finalized && status.total_size === file.size) {
+          bytesReceived = status.bytes_received;
+        } else {
+          uploadId = null; // stale/mismatched session — start fresh
+        }
+      } else {
+        uploadId = null; // session gone server-side (e.g. app was restarted)
+      }
+    } catch (err) {
+      uploadId = null;
+    }
+  }
+
+  if (!uploadId) {
+    const startForm = new FormData();
+    startForm.append("item", item);
+    startForm.append("path", path);
+    startForm.append("filename", file.name);
+    startForm.append("relative_path", relativePath);
+    startForm.append("total_size", String(file.size));
+    const startRes = await fetch("/api/upload/start", { method: "POST", body: startForm });
+    if (!startRes.ok) {
+      const body = await startRes.json().catch(() => ({}));
+      throw new Error(body.detail || `Couldn't start upload (${startRes.status})`);
+    }
+    const startData = await startRes.json();
+    uploadId = startData.upload_id;
+    bytesReceived = 0;
+    localStorage.setItem(fpKey, uploadId);
+  }
+
+  while (bytesReceived < file.size) {
+    const end = Math.min(bytesReceived + UPLOAD_CHUNK_SIZE, file.size);
+    const chunk = file.slice(bytesReceived, end);
+
+    let res;
+    try {
+      res = await fetch(`/api/upload/chunk/${uploadId}?offset=${bytesReceived}`, {
+        method: "PUT",
+        body: chunk,
+      });
+    } catch (networkErr) {
+      // network drop mid-chunk — re-check the server's real position and
+      // retry from there rather than failing the whole upload
+      const statusRes = await fetch(`/api/upload/status/${uploadId}`);
+      if (!statusRes.ok) throw new Error("Connection lost and upload session is gone — please retry");
+      const status = await statusRes.json();
+      bytesReceived = status.bytes_received;
+      continue;
+    }
+
+    if (res.status === 409) {
+      // offset mismatch — re-sync with server's actual position
+      const statusRes = await fetch(`/api/upload/status/${uploadId}`);
+      const status = await statusRes.json();
+      bytesReceived = status.bytes_received;
+      continue;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Chunk upload failed (${res.status})`);
+    }
+
+    const data = await res.json();
+    bytesReceived = data.bytes_received;
+    if (onProgress) onProgress(bytesReceived, file.size);
+  }
+
+  const finalizeRes = await fetch(`/api/upload/finalize/${uploadId}`, { method: "POST" });
+  if (!finalizeRes.ok) {
+    const body = await finalizeRes.json().catch(() => ({}));
+    throw new Error(body.detail || `Couldn't finalize upload (${finalizeRes.status})`);
+  }
+  localStorage.removeItem(fpKey);
+  return await finalizeRes.json();
+}
+
 async function uploadFiles(fileList) {
   const files = Array.from(fileList);
   if (files.length === 0) return;
 
-  const formData = new FormData();
-  formData.append("item", currentBrowseItem);
-  formData.append("path", currentBrowsePath);
-
-  const relativePaths = files.map((f) => f.webkitRelativePath || f.name);
-  formData.append("relative_paths", JSON.stringify(relativePaths));
-  for (const file of files) {
-    formData.append("files", file);
-  }
-
-  uploadStatusEl.textContent = `Uploading ${files.length} item${files.length > 1 ? "s" : ""}…`;
   uploadFilesInput.disabled = true;
   uploadFolderInput.disabled = true;
 
-  try {
-    const res = await fetch("/upload", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.detail || `Server returned ${res.status}`);
+  let succeeded = 0;
+  const failures = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const relativePath = file.webkitRelativePath || file.name;
+
+    try {
+      await uploadFileResumable(file, relativePath, currentBrowseItem, currentBrowsePath, (sent, total) => {
+        const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
+        uploadStatusEl.textContent = `Uploading ${i + 1}/${files.length}: ${file.name} — ${pct}%`;
+      });
+      succeeded++;
+    } catch (err) {
+      failures.push(`${file.name}: ${err.message}`);
     }
-    uploadStatusEl.textContent =
-      data.failed > 0
-        ? `Uploaded ${data.uploaded}, ${data.failed} failed`
-        : `Uploaded ${data.uploaded} item${data.uploaded > 1 ? "s" : ""} ✓`;
-    // refresh the current folder so new files show up immediately
-    await loadListing(currentBrowseItem, currentBrowsePath);
-  } catch (err) {
-    uploadStatusEl.textContent = `Upload failed: ${err.message}`;
-  } finally {
-    uploadFilesInput.disabled = false;
-    uploadFolderInput.disabled = false;
-    uploadFilesInput.value = "";
-    uploadFolderInput.value = "";
-    setTimeout(() => {
-      uploadStatusEl.textContent = "";
-    }, 5000);
   }
+
+  uploadStatusEl.textContent =
+    failures.length > 0
+      ? `Uploaded ${succeeded}/${files.length}, ${failures.length} failed`
+      : `Uploaded ${succeeded} item${succeeded > 1 ? "s" : ""} ✓`;
+  if (failures.length > 0) {
+    console.error("Upload failures:", failures);
+  }
+
+  await loadListing(currentBrowseItem, currentBrowsePath);
+
+  uploadFilesInput.disabled = false;
+  uploadFolderInput.disabled = false;
+  uploadFilesInput.value = "";
+  uploadFolderInput.value = "";
+  setTimeout(() => {
+    uploadStatusEl.textContent = "";
+  }, 6000);
 }
 
 uploadFilesInput.addEventListener("change", (e) => uploadFiles(e.target.files));
