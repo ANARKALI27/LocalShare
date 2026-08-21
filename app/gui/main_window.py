@@ -7,8 +7,10 @@ background thread; the address shown is live and Copy Address works.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QAction, QGuiApplication
+import os
+
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -265,10 +267,32 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
+
+        open_action = QAction("Open in File Explorer", self)
+        open_action.triggered.connect(lambda: self._open_in_explorer(shared_item))
+        menu.addAction(open_action)
+
+        menu.addSeparator()
+
         remove_action = QAction("Remove from sharing", self)
         remove_action.triggered.connect(lambda: self.share_manager.remove(item_id))
         menu.addAction(remove_action)
         menu.exec(self.shared_list.mapToGlobal(pos))
+
+    def _open_in_explorer(self, shared_item: SharedItem) -> None:
+        """
+        Opens the item's location in the OS file manager — for a folder,
+        opens the folder itself; for a file, opens its containing folder
+        with the file visible (QDesktopServices handles this distinction
+        automatically per-platform).
+        """
+        if not shared_item.exists:
+            QMessageBox.warning(
+                self, "Can't open location", "This item no longer exists at its original path."
+            )
+            return
+        target = shared_item.path if shared_item.is_dir else os.path.dirname(shared_item.path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     # -- server controls -----------------------------------------------------------
     def _on_toggle_server_clicked(self) -> None:
