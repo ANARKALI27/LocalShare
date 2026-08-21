@@ -4,9 +4,12 @@ browse the share like a mapped network drive.
 
 Honest limitations (see README for the full explanation):
   - Anonymous access only. Windows Explorer's WebDAV client refuses to
-    send Basic-auth credentials over plain HTTP by default, so a PIN
-    can't be enforced here the way it can for the browser UI. If you
-    need access control, use the browser share with a PIN instead.
+    send Basic-auth credentials over plain HTTP by default, so there's
+    no reasonable way to add access control here even if the app
+    supported it elsewhere.
+  - NOTE: no part of this app (browser share, WebDAV, or messaging)
+    currently has access control — this isn't a WebDAV-specific gap,
+    it's a project-wide one. See README.md security notes.
   - Only shared FOLDERS appear over WebDAV, not individually-shared
     single files — WebDAV publishes filesystem roots, and there's no
     safe way to expose one file without exposing its whole parent

@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from app.paths import WEB_DIR
 from app.server.messages import MessageStore, Attachment
 from app.server.security import PathSecurityError, safe_join
 from app.state import ShareManager
@@ -34,8 +35,6 @@ from app.transfer.download import (
 from app.transfer.resumable import ResumableUploadManager
 from app.transfer.upload import resolve_upload_path, save_upload
 from app.utils.filesystem import list_directory
-
-WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "web")
 
 # Extensions we'll actually try to render as image/video previews. Anything
 # else just shows an icon + size in the hover card — no point trying to

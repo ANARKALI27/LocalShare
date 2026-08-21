@@ -194,10 +194,10 @@ class MainWindow(QMainWindow):
             "'Map Network Drive' -> 'Connect to a website'.\n\n"
             "Requires running LocalShare as Administrator: Windows' WebDAV\n"
             "client is unreliable on non-standard ports, so this uses port 80.\n\n"
-            "Other limitations: anonymous access only (no PIN), shared FOLDERS\n"
+            "Other limitations: shared FOLDERS\n"
             "only (not individually-shared files), and Explorer's WebDAV client\n"
             "can be slow or unreliable for very large transfers.\n"
-            "For big files or PIN protection, use the browser address instead."
+            "For big files, use the browser address instead."
         )
         root.addWidget(self.webdav_checkbox)
 
