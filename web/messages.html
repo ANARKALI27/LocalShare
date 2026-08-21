@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalShare — Messages</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/messages.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>LocalShare</h1>
+    <nav class="top-nav">
+      <a href="/" class="top-nav-link">Files</a>
+      <a href="/messages" class="top-nav-link active">Messages</a>
+    </nav>
+  </header>
+
+  <main class="messages-main">
+    <div id="messages-list" class="messages-list"></div>
+
+    <form id="composer" class="composer">
+      <div id="attachment-preview" class="attachment-preview hidden"></div>
+      <div class="composer-row">
+        <label class="attach-btn" title="Attach image or video">
+          📎
+          <input type="file" id="attach-input" accept="image/*,video/*" multiple hidden />
+        </label>
+        <input
+          type="text"
+          id="message-input"
+          class="message-input"
+          placeholder="Type a message…"
+          autocomplete="off"
+        />
+        <button type="submit" class="action-btn send-btn">Send</button>
+      </div>
+    </form>
+  </main>
+
+  <script src="/static/messages.js"></script>
+</body>
+</html>

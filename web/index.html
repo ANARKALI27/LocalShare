@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalShare</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>LocalShare</h1>
+    <nav class="top-nav">
+      <a href="/" class="top-nav-link active">Files</a>
+      <a href="/messages" class="top-nav-link">Messages</a>
+    </nav>
+    <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+  </header>
+
+  <main>
+    <div id="empty-state" class="empty-state hidden">
+      <p>Nothing shared yet.</p>
+    </div>
+
+    <div id="upload-bar" class="upload-bar hidden">
+      <label class="action-btn upload-btn">
+        Upload Files
+        <input type="file" id="upload-files-input" multiple hidden />
+      </label>
+      <label class="action-btn upload-btn">
+        Upload Folder
+        <input type="file" id="upload-folder-input" webkitdirectory hidden />
+      </label>
+      <span id="upload-status" class="upload-status"></span>
+    </div>
+
+    <table id="listing" class="listing hidden">
+      <thead>
+        <tr>
+          <th class="col-name">Name</th>
+          <th class="col-size">Size</th>
+          <th class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="listing-body"></tbody>
+    </table>
+
+    <div id="loading" class="loading">Loading…</div>
+    <div id="error" class="error hidden"></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+
+  <div id="preview-panel" class="preview-panel hidden"></div>
+</body>
+</html>
