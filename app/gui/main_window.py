@@ -222,6 +222,13 @@ class MainWindow(QMainWindow):
         self.qr_caption_label.hide()
         root.addWidget(self.qr_caption_label)
 
+        self.save_qr_btn = QPushButton("Save QR Code…")
+        self.save_qr_btn.clicked.connect(self._save_qr_code)
+        self.save_qr_btn.hide()
+        root.addWidget(self.save_qr_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self._current_qr_pixmap = None
+
         # Action buttons
         action_row = QHBoxLayout()
         self.copy_address_btn = QPushButton("Copy Address")
@@ -350,15 +357,34 @@ class MainWindow(QMainWindow):
             # blocking sharing over an optional convenience feature.
             self.qr_label.hide()
             self.qr_caption_label.hide()
+            self.save_qr_btn.hide()
+            self._current_qr_pixmap = None
             return
+        self._current_qr_pixmap = pixmap
         self.qr_label.setPixmap(pixmap)
         self.qr_label.show()
         self.qr_caption_label.show()
+        self.save_qr_btn.show()
 
     def _hide_qr_code(self) -> None:
         self.qr_label.clear()
         self.qr_label.hide()
         self.qr_caption_label.hide()
+        self.save_qr_btn.hide()
+        self._current_qr_pixmap = None
+
+    def _save_qr_code(self) -> None:
+        if self._current_qr_pixmap is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save QR Code", "LocalShare-QR.png", "PNG Image (*.png)"
+        )
+        if not path:
+            return  # user cancelled
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        if not self._current_qr_pixmap.save(path, "PNG"):
+            QMessageBox.warning(self, "Couldn't save QR code", f"Failed to save to:\n{path}")
 
     def _start_webdav(self) -> None:
         try:
