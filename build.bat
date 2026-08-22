@@ -8,7 +8,7 @@ pip install pyinstaller
 
 echo.
 echo Building LocalShare.exe (this can take a few minutes)...
-pyinstaller --noconfirm localshare.spec
+python -m PyInstaller --noconfirm localshare.spec
 
 echo.
 if exist "dist\LocalShare.exe" (
