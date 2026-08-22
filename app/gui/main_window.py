@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.drop_zone import DropZone
+from app.gui.qr_widget import generate_qr_pixmap
 from app.server.http_server import ServerHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
@@ -208,6 +209,19 @@ class MainWindow(QMainWindow):
         self.webdav_status_label.hide()
         root.addWidget(self.webdav_status_label)
 
+        # QR code — lets a phone scan the address instead of typing it.
+        # Shown centered, only while the server is running.
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.hide()
+        root.addWidget(self.qr_label)
+
+        self.qr_caption_label = QLabel("Scan with a phone to open this share")
+        self.qr_caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_caption_label.setStyleSheet("color: #9296A1; font-size: 12px;")
+        self.qr_caption_label.hide()
+        root.addWidget(self.qr_caption_label)
+
         # Action buttons
         action_row = QHBoxLayout()
         self.copy_address_btn = QPushButton("Copy Address")
@@ -324,8 +338,27 @@ class MainWindow(QMainWindow):
         self.toggle_server_btn.setEnabled(True)
         self.webdav_checkbox.setEnabled(False)  # locked while running to avoid a confusing mid-session toggle
 
+        self._show_qr_code(address)
+
         if self.webdav_checkbox.isChecked():
             self._start_webdav()
+
+    def _show_qr_code(self, address: str) -> None:
+        pixmap = generate_qr_pixmap(address)
+        if pixmap is None:
+            # "qrcode" package not installed — fail quietly rather than
+            # blocking sharing over an optional convenience feature.
+            self.qr_label.hide()
+            self.qr_caption_label.hide()
+            return
+        self.qr_label.setPixmap(pixmap)
+        self.qr_label.show()
+        self.qr_caption_label.show()
+
+    def _hide_qr_code(self) -> None:
+        self.qr_label.clear()
+        self.qr_label.hide()
+        self.qr_caption_label.hide()
 
     def _start_webdav(self) -> None:
         try:
@@ -362,6 +395,7 @@ class MainWindow(QMainWindow):
             self.webdav_handle.stop()
         self.webdav_status_label.hide()
         self.webdav_checkbox.setEnabled(True)
+        self._hide_qr_code()
 
         self.status_dot.setText("○")
         self.status_dot.setStyleSheet("color: inherit; font-size: 14px;")

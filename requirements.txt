@@ -11,6 +11,9 @@ python-multipart>=0.0.9
 # Phase 6: WebDAV / Explorer integration (optional, experimental — see README)
 wsgidav>=4.3
 cheroot>=10.0
+
+# Phase 8: QR code for phone access
+qrcode[pil]>=7.4
 # wsgidav>=4.3          # Phase 6: WebDAV / Explorer integration
 # qrcode[pil]>=7.4       # Phase 8: QR code
 # zeroconf>=0.132        # Phase 8: LAN discovery
