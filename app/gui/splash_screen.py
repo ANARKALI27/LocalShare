@@ -9,8 +9,8 @@ import random
 import time
 
 from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGraphicsOpacityEffect, QPainter, QRadialGradient
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QPainter, QRadialGradient
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
 
 from app.gui.theme import DARK
 
