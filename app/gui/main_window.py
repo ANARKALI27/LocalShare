@@ -10,10 +10,11 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QColorDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -72,7 +73,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LocalShare")
         self.resize(480, 640)
-        self.theme_colors = DARK
+
+        self._is_dark = True
+        self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
+        self.theme_colors = self._current_base_colors()
         self.setStyleSheet(build_stylesheet(self.theme_colors))
 
         self.share_manager = ShareManager()
@@ -98,6 +102,12 @@ class MainWindow(QMainWindow):
         title.setObjectName("Title")
         title_row.addWidget(title)
         title_row.addStretch()
+
+        self.accent_color_btn = QPushButton("🎨")
+        self.accent_color_btn.setToolTip("Choose a custom accent color")
+        self.accent_color_btn.setFixedWidth(36)
+        self.accent_color_btn.clicked.connect(self._choose_accent_color)
+        title_row.addWidget(self.accent_color_btn)
 
         self.theme_toggle_btn = QPushButton("☀️ Light")
         self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
@@ -202,6 +212,13 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         action_row.addWidget(self.toggle_server_btn)
         root.addLayout(action_row)
+
+        self.credit_label = QLabel("Developed by ANARKALI")
+        self.credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.credit_label.setStyleSheet(
+            f"color: {self.theme_colors['text_dim']}; font-size: 11px; letter-spacing: 0.5px;"
+        )
+        root.addWidget(self.credit_label)
 
     # -- drop / browse handlers -----------------------------------------------------------
     def _on_paths_dropped(self, paths: list[str]) -> None:
@@ -395,22 +412,65 @@ class MainWindow(QMainWindow):
         if address:
             QGuiApplication.clipboard().setText(address)
 
-    def _toggle_theme(self) -> None:
-        self.theme_colors = LIGHT if self.theme_colors is DARK else DARK
-        self.setStyleSheet(build_stylesheet(self.theme_colors))
-        self.drop_zone.set_theme(self.theme_colors)
+    def _current_base_colors(self) -> dict:
+        """
+        A fresh copy of the active base palette (dark or light). Always
+        a copy, never the shared DARK/LIGHT dict itself — accent-color
+        customization mutates this per-window copy, and mutating the
+        module-level constants directly would permanently corrupt the
+        "true default" palette for the rest of the app's lifetime.
+        """
+        base = DARK if self._is_dark else LIGHT
+        return dict(base)
 
-        self.theme_toggle_btn.setText("☀️ Light" if self.theme_colors is DARK else "🌙 Dark")
+    def _compute_hover_color(self, hex_color: str) -> str:
+        """
+        Derives a hover-state variant of a custom accent color. Dark
+        backgrounds want a LIGHTER hover for contrast; light backgrounds
+        want a DARKER one — matches the relationship already present
+        between the built-in accent/accent_hover pairs in each palette.
+        """
+        color = QColor(hex_color)
+        adjusted = color.lighter(115) if self._is_dark else color.darker(115)
+        return adjusted.name()
 
-        dim_style = f"color: {self.theme_colors['text_dim']}; font-size: 12px;"
+    def _apply_theme(self) -> None:
+        """Rebuilds theme_colors from the current base + any custom accent
+        override, then pushes it out to every widget that needs it."""
+        colors = self._current_base_colors()
+        if self._custom_accent:
+            colors["accent"] = self._custom_accent
+            colors["accent_hover"] = self._compute_hover_color(self._custom_accent)
+        self.theme_colors = colors
+
+        self.setStyleSheet(build_stylesheet(colors))
+        self.drop_zone.set_theme(colors)
+        self.theme_toggle_btn.setText("☀️ Light" if self._is_dark else "🌙 Dark")
+
+        dim_style = f"color: {colors['text_dim']}; font-size: 12px;"
         self.webdav_status_label.setStyleSheet(dim_style)
         self.qr_caption_label.setStyleSheet(dim_style)
+        self.credit_label.setStyleSheet(
+            f"color: {colors['text_dim']}; font-size: 11px; letter-spacing: 0.5px;"
+        )
 
         # status dot color depends on server state, not just theme
         if self.server_handle.is_running:
-            self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
+            self.status_dot.setStyleSheet(f"color: {colors['success']}; font-size: 14px;")
         else:
-            self.status_dot.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 14px;")
+            self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
+
+    def _toggle_theme(self) -> None:
+        self._is_dark = not self._is_dark
+        self._apply_theme()
+
+    def _choose_accent_color(self) -> None:
+        initial = QColor(self.theme_colors["accent"])
+        color = QColorDialog.getColor(initial, self, "Choose Accent Color")
+        if not color.isValid():
+            return  # user cancelled
+        self._custom_accent = color.name()
+        self._apply_theme()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:
