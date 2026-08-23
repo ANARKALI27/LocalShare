@@ -8,6 +8,16 @@
   --accent-hover: #5D98FF;
 }
 
+html[data-theme="light"] {
+  --bg: #F5F6F8;
+  --surface: #FFFFFF;
+  --border: #DCDFE4;
+  --text: #20222A;
+  --text-dim: #6B6F76;
+  --accent: #2F6FE0;
+  --accent-hover: #255CC0;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -15,11 +25,37 @@ body {
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .topbar {
   padding: 20px 24px 12px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-toggle-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.theme-toggle-btn:hover {
+  background: rgba(128, 128, 128, 0.12);
 }
 
 .topbar h1 {
@@ -190,6 +226,43 @@ main {
 
 .hidden {
   display: none !important;
+}
+
+/* Splash / loading overlay */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.4s ease;
+}
+
+.loading-overlay.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-overlay .loading-title {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+  animation: loading-pulse 1.6s ease-in-out infinite;
+}
+
+.loading-overlay .loading-subtitle {
+  margin-top: 8px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+@keyframes loading-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 /* Hover preview panel */

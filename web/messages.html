@@ -6,14 +6,23 @@
   <title>LocalShare — Messages</title>
   <link rel="stylesheet" href="/static/style.css" />
   <link rel="stylesheet" href="/static/messages.css" />
+  <script src="/static/theme.js"></script>
 </head>
 <body>
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-title">LocalShare</div>
+    <div class="loading-subtitle">Developed By ANARKALI</div>
+  </div>
+
   <header class="topbar">
-    <h1>LocalShare</h1>
-    <nav class="top-nav">
-      <a href="/" class="top-nav-link">Files</a>
-      <a href="/messages" class="top-nav-link active">Messages</a>
-    </nav>
+    <div class="topbar-left">
+      <h1>LocalShare</h1>
+      <nav class="top-nav">
+        <a href="/" class="top-nav-link">Files</a>
+        <a href="/messages" class="top-nav-link active">Messages</a>
+      </nav>
+    </div>
+    <button id="theme-toggle-btn" class="theme-toggle-btn" type="button">☀️ Light</button>
   </header>
 
   <main class="messages-main">

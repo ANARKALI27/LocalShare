@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from app.gui.theme import DARK
+
 
 class DropZone(QWidget):
     """Emits `pathsDropped(list[str])` with absolute paths of dropped files/folders."""
@@ -19,6 +21,8 @@ class DropZone(QWidget):
         self.setAcceptDrops(True)
         self.setMinimumHeight(160)
         self.setObjectName("DropZone")
+        self._colors = DARK
+        self._active = False
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -34,12 +38,19 @@ class DropZone(QWidget):
         layout.addWidget(self._icon_label)
         layout.addWidget(self._text_label)
 
-        self._apply_style(active=False)
+        self._apply_style()
+
+    def set_theme(self, colors: dict) -> None:
+        """Called by MainWindow when the user switches theme."""
+        self._colors = colors
+        self._apply_style()
 
     # -- styling -----------------------------------------------------------
-    def _apply_style(self, active: bool) -> None:
-        border_color = "#4C8DFF" if active else "#3A3D46"
-        bg_color = "rgba(76, 141, 255, 0.08)" if active else "transparent"
+    def _apply_style(self) -> None:
+        border_color = self._colors["accent"] if self._active else self._colors["border"]
+        bg_color = (
+            f"rgba(76, 141, 255, 0.08)" if self._active else "transparent"
+        )
         self.setStyleSheet(
             f"""
             #DropZone {{
@@ -48,7 +59,7 @@ class DropZone(QWidget):
                 background-color: {bg_color};
             }}
             #DropZoneText {{
-                color: #A9ACB5;
+                color: {self._colors['text_dim']};
                 font-size: 13px;
             }}
             """
@@ -58,17 +69,20 @@ class DropZone(QWidget):
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self._apply_style(active=True)
+            self._active = True
+            self._apply_style()
             self._text_label.setText("Release to share")
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
-        self._apply_style(active=False)
+        self._active = False
+        self._apply_style()
         self._text_label.setText("Drag & drop files or folders here")
 
     def dropEvent(self, event: QDropEvent) -> None:
-        self._apply_style(active=False)
+        self._active = False
+        self._apply_style()
         self._text_label.setText("Drag & drop files or folders here")
 
         paths: list[str] = []

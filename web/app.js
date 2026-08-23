@@ -471,4 +471,6 @@ window.addEventListener("popstate", () => {
 });
 
 const initial = getUrlParams();
-loadListing(initial.item, initial.path);
+loadListing(initial.item, initial.path).finally(() => {
+  if (typeof hideLoadingOverlay === "function") hideLoadingOverlay();
+});

@@ -204,5 +204,7 @@ if (messagesListEl.children.length === 0) {
   messagesListEl.appendChild(empty);
 }
 
-pollMessages();
+pollMessages().finally(() => {
+  if (typeof hideLoadingOverlay === "function") hideLoadingOverlay();
+});
 setInterval(pollMessages, POLL_INTERVAL_MS);

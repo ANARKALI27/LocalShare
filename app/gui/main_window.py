@@ -29,61 +29,10 @@ from PySide6.QtWidgets import (
 
 from app.gui.drop_zone import DropZone
 from app.gui.qr_widget import generate_qr_pixmap
+from app.gui.theme import DARK, LIGHT, build_stylesheet
 from app.server.http_server import ServerHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
-
-APP_STYLESHEET = """
-QMainWindow, QWidget {
-    background-color: #1E1F26;
-    color: #E7E8EC;
-    font-family: "Segoe UI", sans-serif;
-}
-QLabel#Title {
-    font-size: 20px;
-    font-weight: 600;
-}
-QLabel#SectionLabel {
-    font-size: 12px;
-    color: #9296A1;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-QListWidget {
-    background-color: #262832;
-    border: 1px solid #33353F;
-    border-radius: 8px;
-    padding: 4px;
-}
-QListWidget::item {
-    padding: 8px;
-    border-radius: 6px;
-}
-QListWidget::item:selected {
-    background-color: #33405C;
-}
-QPushButton {
-    background-color: #2E313C;
-    border: 1px solid #3A3D46;
-    border-radius: 6px;
-    padding: 8px 14px;
-}
-QPushButton:hover {
-    background-color: #383B47;
-}
-QPushButton#PrimaryButton {
-    background-color: #4C8DFF;
-    border: none;
-    color: white;
-    font-weight: 600;
-}
-QPushButton#PrimaryButton:hover {
-    background-color: #5D98FF;
-}
-QLabel#StatusDot {
-    font-size: 14px;
-}
-"""
 
 
 class _ServerStartWorker(QThread):
@@ -123,7 +72,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LocalShare")
         self.resize(480, 640)
-        self.setStyleSheet(APP_STYLESHEET)
+        self.theme_colors = DARK
+        self.setStyleSheet(build_stylesheet(self.theme_colors))
 
         self.share_manager = ShareManager()
         self.share_manager.on_change(self._refresh_shared_list)
@@ -143,9 +93,18 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(14)
 
+        title_row = QHBoxLayout()
         title = QLabel("LocalShare")
         title.setObjectName("Title")
-        root.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        self.theme_toggle_btn = QPushButton("☀️ Light")
+        self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
+        self.theme_toggle_btn.clicked.connect(self._toggle_theme)
+        title_row.addWidget(self.theme_toggle_btn)
+
+        root.addLayout(title_row)
 
         # Drop zone
         self.drop_zone = DropZone()
@@ -203,7 +162,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.webdav_checkbox)
 
         self.webdav_status_label = QLabel("")
-        self.webdav_status_label.setStyleSheet("color: #9296A1; font-size: 12px;")
+        self.webdav_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self.webdav_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.webdav_status_label.setWordWrap(True)
         self.webdav_status_label.hide()
@@ -218,7 +177,7 @@ class MainWindow(QMainWindow):
 
         self.qr_caption_label = QLabel("Scan with a phone to open this share")
         self.qr_caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr_caption_label.setStyleSheet("color: #9296A1; font-size: 12px;")
+        self.qr_caption_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self.qr_caption_label.hide()
         root.addWidget(self.qr_caption_label)
 
@@ -337,7 +296,7 @@ class MainWindow(QMainWindow):
 
     def _on_server_started(self, address: str) -> None:
         self.status_dot.setText("●")
-        self.status_dot.setStyleSheet("color: #4CD787; font-size: 14px;")
+        self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
         self.status_label.setText("Server: Running")
         self.address_label.setText(f"Address: {address}")
         self.copy_address_btn.setEnabled(True)
@@ -424,7 +383,7 @@ class MainWindow(QMainWindow):
         self._hide_qr_code()
 
         self.status_dot.setText("○")
-        self.status_dot.setStyleSheet("color: inherit; font-size: 14px;")
+        self.status_dot.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 14px;")
         self.status_label.setText("Server: Stopped")
         self.address_label.setText("Address: —")
         self.copy_address_btn.setEnabled(False)
@@ -435,6 +394,23 @@ class MainWindow(QMainWindow):
         address = self.server_handle.address
         if address:
             QGuiApplication.clipboard().setText(address)
+
+    def _toggle_theme(self) -> None:
+        self.theme_colors = LIGHT if self.theme_colors is DARK else DARK
+        self.setStyleSheet(build_stylesheet(self.theme_colors))
+        self.drop_zone.set_theme(self.theme_colors)
+
+        self.theme_toggle_btn.setText("☀️ Light" if self.theme_colors is DARK else "🌙 Dark")
+
+        dim_style = f"color: {self.theme_colors['text_dim']}; font-size: 12px;"
+        self.webdav_status_label.setStyleSheet(dim_style)
+        self.qr_caption_label.setStyleSheet(dim_style)
+
+        # status dot color depends on server state, not just theme
+        if self.server_handle.is_running:
+            self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
+        else:
+            self.status_dot.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 14px;")
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:

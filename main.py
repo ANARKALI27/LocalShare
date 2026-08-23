@@ -8,6 +8,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from app.gui.main_window import MainWindow
+from app.gui.splash_screen import SplashScreen
 
 
 def main() -> None:
@@ -15,7 +16,14 @@ def main() -> None:
     app.setApplicationName("LocalShare")
 
     window = MainWindow()
-    window.show()
+
+    splash = SplashScreen()
+
+    def show_main_window() -> None:
+        window.show()
+
+    splash.finished.connect(show_main_window)
+    splash.start()
 
     sys.exit(app.exec())
 

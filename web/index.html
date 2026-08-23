@@ -5,15 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LocalShare</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/theme.js"></script>
 </head>
 <body>
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-title">LocalShare</div>
+    <div class="loading-subtitle">Developed By ANARKALI</div>
+  </div>
+
   <header class="topbar">
-    <h1>LocalShare</h1>
-    <nav class="top-nav">
-      <a href="/" class="top-nav-link active">Files</a>
-      <a href="/messages" class="top-nav-link">Messages</a>
-    </nav>
-    <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+    <div class="topbar-left">
+      <h1>LocalShare</h1>
+      <nav class="top-nav">
+        <a href="/" class="top-nav-link active">Files</a>
+        <a href="/messages" class="top-nav-link">Messages</a>
+      </nav>
+      <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+    </div>
+    <button id="theme-toggle-btn" class="theme-toggle-btn" type="button">☀️ Light</button>
   </header>
 
   <main>
