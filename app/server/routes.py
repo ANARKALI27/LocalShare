@@ -23,6 +23,7 @@ from starlette.background import BackgroundTask
 
 from app.paths import WEB_DIR
 from app.server.messages import MessageStore, Attachment
+from app.version import APP_VERSION
 from app.server.security import PathSecurityError, safe_join
 from app.state import ShareManager
 from app.transfer.download import (
@@ -140,6 +141,10 @@ def build_router(
     @router.get("/api/status")
     def status() -> dict:
         return {"app": "LocalShare", "status": "running", "shared_item_count": len(share_manager)}
+
+    @router.get("/api/version")
+    def version() -> dict:
+        return {"app": "LocalShare", "version": APP_VERSION}
 
     @router.get("/ping")
     def ping() -> dict:

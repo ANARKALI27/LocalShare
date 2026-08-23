@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QSettings, QThread, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -31,9 +32,11 @@ from PySide6.QtWidgets import (
 from app.gui.drop_zone import DropZone
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import DARK, LIGHT, build_stylesheet
+from app.gui.update_checker import check_for_update
 from app.server.http_server import ServerHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
+from app.version import APP_VERSION
 
 
 class _ServerStartWorker(QThread):
@@ -66,6 +69,21 @@ class _ServerStopWorker(QThread):
     def run(self) -> None:
         self._handle.stop()
         self.finished.emit()
+
+
+class _UpdateCheckWorker(QThread):
+    """Runs the network request off the GUI thread so a slow/unreachable
+    address doesn't freeze the window."""
+
+    finished = Signal(object)  # UpdateCheckResult
+
+    def __init__(self, address: str) -> None:
+        super().__init__()
+        self._address = address
+
+    def run(self) -> None:
+        result = check_for_update(self._address, APP_VERSION)
+        self.finished.emit(result)
 
 
 class MainWindow(QMainWindow):
@@ -212,6 +230,22 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         action_row.addWidget(self.toggle_server_btn)
         root.addLayout(action_row)
+
+        # Update checking — points at another running LocalShare instance
+        # (typically the "main" copy someone keeps up to date) rather than
+        # any internet server, since this app has no central host.
+        update_row = QHBoxLayout()
+        self.update_source_input = QLineEdit()
+        self.update_source_input.setPlaceholderText("Update source address (e.g. 192.168.1.104:8765)")
+        saved_source = QSettings("LocalShare", "LocalShare").value("update_source", "")
+        if saved_source:
+            self.update_source_input.setText(saved_source)
+        update_row.addWidget(self.update_source_input, stretch=1)
+
+        self.check_update_btn = QPushButton("Check for Updates")
+        self.check_update_btn.clicked.connect(self._check_for_updates)
+        update_row.addWidget(self.check_update_btn)
+        root.addLayout(update_row)
 
         self.credit_label = QLabel("Developed by ANARKALI")
         self.credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -471,6 +505,50 @@ class MainWindow(QMainWindow):
             return  # user cancelled
         self._custom_accent = color.name()
         self._apply_theme()
+
+    def _check_for_updates(self) -> None:
+        address = self.update_source_input.text().strip()
+        if not address:
+            QMessageBox.information(
+                self,
+                "Enter an address",
+                "Enter the address of another running LocalShare instance to check "
+                "(e.g. the one on the PC that keeps the latest version), then try again.",
+            )
+            return
+
+        QSettings("LocalShare", "LocalShare").setValue("update_source", address)
+
+        self.check_update_btn.setEnabled(False)
+        self.check_update_btn.setText("Checking…")
+
+        self._update_worker = _UpdateCheckWorker(address)
+        self._update_worker.finished.connect(self._on_update_check_finished)
+        self._update_worker.start()
+
+    def _on_update_check_finished(self, result) -> None:
+        self.check_update_btn.setEnabled(True)
+        self.check_update_btn.setText("Check for Updates")
+
+        if not result.ok:
+            QMessageBox.warning(self, "Couldn't check for updates", result.error)
+            return
+
+        if result.is_newer:
+            QMessageBox.information(
+                self,
+                "Update available",
+                f"A newer version is available: v{result.remote_version} "
+                f"(you have v{APP_VERSION}).\n\n"
+                f"Open that address in your browser and download the latest "
+                f"LocalShare.exe from the shared files, then replace this one.",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Up to date",
+                f"You're running the latest version (v{APP_VERSION}).",
+            )
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:

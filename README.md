@@ -44,6 +44,24 @@ bind port 80, and Explorer's WebDAV client is unreliable on any other
 port — see the in-app tooltip for details). This is best-effort: the
 browser share is the reliable path for anything large or important.
 
+## Updating a friend's copy
+
+There's no central update server for this project, so "Check for
+Updates" works by asking *another running LocalShare instance* what
+version it's on — typically whoever's PC has the newest build. Enter
+that instance's address (shown in its own app window) and click Check.
+
+If a newer version is found, it tells you but doesn't auto-download —
+open that address in a browser and grab the new `LocalShare.exe` from
+the shared files (the same way you'd share any other file), then
+replace the old one manually. This is deliberate: automatically
+downloading and swapping out a running `.exe` on Windows needs careful
+handling around file locks that isn't safe to ship without testing on
+a real machine.
+
+Before rebuilding a new version to share, bump `APP_VERSION` in
+`app/version.py` — that's what the update check compares.
+
 ## Accessing from a phone / other device
 
 The browser share (files + messages) works from any device's browser
