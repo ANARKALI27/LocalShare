@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -93,7 +95,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LocalShare")
         self.setWindowIcon(QIcon(ICON_PATH))
-        self.resize(480, 640)
+        self.resize(520, 720)
+        self.setMinimumSize(380, 420)  # small enough to shrink comfortably, never unusably tiny
 
         self._is_dark = True
         self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
@@ -112,8 +115,18 @@ class MainWindow(QMainWindow):
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
+        # Wrapped in a scroll area so the window stays genuinely
+        # resizable in both directions: if it's ever made smaller than
+        # the content needs (a lot has been added to this window over
+        # time — WebDAV status, QR code, update checker, etc.), a
+        # scrollbar appears instead of anything getting clipped or cut off.
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCentralWidget(scroll_area)
+
         central = QWidget()
-        self.setCentralWidget(central)
+        scroll_area.setWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
         root.setSpacing(14)

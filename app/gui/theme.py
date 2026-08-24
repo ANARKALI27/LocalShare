@@ -91,4 +91,11 @@ QPushButton#PrimaryButton:hover {{
 QLabel#StatusDot {{
     font-size: 14px;
 }}
+QScrollArea {{
+    border: none;
+    background-color: {c['bg']};
+}}
+QScrollArea > QWidget > QWidget {{
+    background-color: {c['bg']};
+}}
 """
