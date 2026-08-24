@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for LocalShare.
+# PyInstaller spec for LocalShare. Shared by both build.bat (Windows)
+# and build_deb.sh/build_linux.sh (Linux) — same source, same spec.
 #
 # Build with:  pyinstaller localshare.spec
-# (see build.bat for the one-command version)
+# (see build.bat / build_linux.sh for the one-command versions)
 #
 # Web frameworks like uvicorn and wsgidav load some of their pieces
 # dynamically (by string name, based on config) rather than with a
@@ -14,6 +15,8 @@
 # If you hit a missing-module error anyway, note the exact module name
 # from the error and add it here — that's a normal part of packaging
 # a project like this, not a sign something is fundamentally broken.
+
+import sys
 
 hiddenimports = [
     # uvicorn picks its event loop / protocol implementation dynamically
@@ -48,6 +51,7 @@ hiddenimports = [
 
 datas = [
     ("web", "web"),  # the browser UI (HTML/CSS/JS) — served as static files at runtime
+    ("assets", "assets"),  # app icon (runtime taskbar/title-bar icon, loaded via app/paths.py)
 ]
 
 a = Analysis(
@@ -83,5 +87,10 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon="localshare.ico",  # uncomment and provide a .ico if you want a custom app icon
+    icon="assets/localshare.ico" if sys.platform.startswith("win") else None,
+    # ^ Windows exe file icon only — icon= is a Windows/macOS-only
+    # concept (embedded PE/Mach-O resource); explicitly gating it here
+    # rather than relying on PyInstaller to silently no-op it on Linux,
+    # since that behavior isn't something to bet an already-working
+    # Linux build on without being able to verify it directly.
 )

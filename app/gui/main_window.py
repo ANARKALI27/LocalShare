@@ -11,7 +11,7 @@ import os
 import platform
 
 from PySide6.QtCore import Qt, QSettings, QThread, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from app.gui.drop_zone import DropZone
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import DARK, LIGHT, build_stylesheet
+from app.paths import ICON_PATH
 from app.gui.update_checker import check_for_update
 from app.server.http_server import ServerHandle
 from app.server.webdav_server import WebDavHandle
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("LocalShare")
+        self.setWindowIcon(QIcon(ICON_PATH))
         self.resize(480, 640)
 
         self._is_dark = True
