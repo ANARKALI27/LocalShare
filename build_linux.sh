@@ -21,9 +21,33 @@ if ! "$PY" -m pip --version >/dev/null 2>&1; then
     exit 1
 fi
 
+install_with_pip() {
+    # Try a normal install first. Only fall back to
+    # --break-system-packages if pip specifically blocks it with the
+    # PEP 668 "externally-managed-environment" error (modern Debian
+    # 12+/Bookworm and some other distros) — forcing that flag
+    # unconditionally would break older pip versions (pre-23.0, e.g.
+    # Debian 11/Bullseye) that don't recognize it at all.
+    local err_log
+    err_log=$(mktemp)
+    if "$PY" -m pip install "$@" 2>"$err_log"; then
+        rm -f "$err_log"
+        return 0
+    fi
+    if grep -qi "externally-managed-environment" "$err_log"; then
+        echo "System Python is externally managed (PEP 668) -- retrying with --break-system-packages..."
+        rm -f "$err_log"
+        "$PY" -m pip install --break-system-packages "$@"
+        return $?
+    fi
+    cat "$err_log"
+    rm -f "$err_log"
+    return 1
+}
+
 echo "Installing/updating dependencies..."
-"$PY" -m pip install -r requirements.txt
-"$PY" -m pip install pyinstaller
+install_with_pip -r requirements.txt
+install_with_pip pyinstaller
 
 echo
 echo "Building LocalShare (this can take a few minutes)..."
