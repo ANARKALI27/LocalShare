@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5D98FF"/>
+      <stop offset="100%" stop-color="#3568D4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)"/>
+
+  <!-- folder body -->
+  <path d="M60 96
+           a14 14 0 0 1 14-14
+           h34
+           l14 16
+           h60
+           a14 14 0 0 1 14 14
+           v70
+           a14 14 0 0 1 -14 14
+           H74
+           a14 14 0 0 1 -14 -14
+           Z"
+        fill="#FFFFFF"/>
+
+  <!-- broadcast / share arcs -->
+  <g stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" fill="none">
+    <path d="M150 78 a34 34 0 0 1 0 -48" transform="translate(0,4)"/>
+    <path d="M168 88 a58 58 0 0 1 0 -68" transform="translate(0,4)"/>
+  </g>
+  <circle cx="132" cy="58" r="9" fill="#FFFFFF"/>
+</svg>
