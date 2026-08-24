@@ -168,6 +168,14 @@ class MainWindow(QMainWindow):
         title = QLabel("LocalShare")
         title.setObjectName("Title")
         title_row.addWidget(title)
+
+        version_label = QLabel(f"v{APP_VERSION}")
+        version_label.setStyleSheet(
+            f"color: {self.theme_colors['text_dim']}; font-size: 12px; padding-top: 6px;"
+        )
+        self._version_label = version_label  # kept for theme refresh
+        title_row.addWidget(version_label)
+
         title_row.addStretch()
 
         self.accent_color_btn = QPushButton("🎨")
@@ -233,7 +241,7 @@ class MainWindow(QMainWindow):
         mode_row = QHBoxLayout()
         self.local_only_radio = QRadioButton("Local Network Only")
         self.local_only_radio.setChecked(True)
-        self.internet_radio = QRadioButton("Local Network + Internet")
+        self.internet_radio = QRadioButton("Global")
         self.mode_button_group = QButtonGroup(self)
         self.mode_button_group.addButton(self.local_only_radio)
         self.mode_button_group.addButton(self.internet_radio)
@@ -241,6 +249,15 @@ class MainWindow(QMainWindow):
         mode_row.addWidget(self.internet_radio)
         root.addLayout(mode_row)
         self.internet_radio.toggled.connect(self._on_mode_changed)
+
+        # Explicit "you are here" line — the radio dots alone are a
+        # small, easy-to-miss signal, especially before the indicator
+        # styling fix; this makes the active mode unambiguous at a glance.
+        self.mode_indicator_label = QLabel("● Local Network Only selected")
+        self.mode_indicator_label.setStyleSheet(
+            f"color: {self.theme_colors['accent']}; font-size: 12px; font-weight: 600;"
+        )
+        root.addWidget(self.mode_indicator_label)
 
         self.ngrok_token_input = QLineEdit()
         self.ngrok_token_input.setPlaceholderText(
@@ -261,10 +278,19 @@ class MainWindow(QMainWindow):
         root.addWidget(self.tunnel_status_label)
 
         # -- PIN protection -----------------------------------------------------------
+        # Local mode: a real checkbox — PIN is optional, user's choice.
+        # Global mode: no checkbox at all (nothing that looks toggleable),
+        # just a plain label stating it's mandatory — see _on_mode_changed.
         pin_row = QHBoxLayout()
         self.pin_checkbox = QCheckBox("Require PIN to access")
         self.pin_checkbox.toggled.connect(self._on_pin_checkbox_toggled)
         pin_row.addWidget(self.pin_checkbox)
+
+        self.pin_mandatory_label = QLabel("🔒 PIN required (mandatory for Global sharing)")
+        self.pin_mandatory_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        self.pin_mandatory_label.hide()
+        pin_row.addWidget(self.pin_mandatory_label)
+
         self.custom_pin_input = QLineEdit()
         self.custom_pin_input.setPlaceholderText("Custom PIN (optional)")
         self.custom_pin_input.setMaxLength(12)
@@ -538,14 +564,24 @@ class MainWindow(QMainWindow):
 
     def _on_mode_changed(self, internet_checked: bool) -> None:
         self.ngrok_token_input.setVisible(internet_checked)
+
         if internet_checked:
+            self.mode_indicator_label.setText("● Global selected")
             # Internet exposure without a PIN is a real risk (see
-            # tunnel.py / README) — force it on and don't allow turning
-            # it off while this mode is selected.
-            self.pin_checkbox.setChecked(True)
-            self.pin_checkbox.setEnabled(False)
+            # tunnel.py / README) — mandatory here, and shown as a plain
+            # statement rather than a disabled checkbox, so it doesn't
+            # look like a toggle someone could turn off if only they
+            # clicked the right spot.
+            self.pin_checkbox.hide()
+            self.pin_mandatory_label.show()
+            self.pin_checkbox.setChecked(True)  # underlying state, even though hidden
+            self.custom_pin_input.setVisible(True)  # can still choose your own PIN, just can't disable it
         else:
+            self.mode_indicator_label.setText("● Local Network Only selected")
+            self.pin_mandatory_label.hide()
+            self.pin_checkbox.show()
             self.pin_checkbox.setEnabled(True)
+            self.custom_pin_input.setVisible(self.pin_checkbox.isChecked())
             self.tunnel_status_label.hide()
 
     def _on_pin_checkbox_toggled(self, checked: bool) -> None:
@@ -705,6 +741,13 @@ class MainWindow(QMainWindow):
         self.credit_label.setStyleSheet(
             f"color: {colors['text_dim']}; font-size: 11px; letter-spacing: 0.5px;"
         )
+        self._version_label.setStyleSheet(
+            f"color: {colors['text_dim']}; font-size: 12px; padding-top: 6px;"
+        )
+        self.mode_indicator_label.setStyleSheet(
+            f"color: {colors['accent']}; font-size: 12px; font-weight: 600;"
+        )
+        self.pin_mandatory_label.setStyleSheet(f"color: {colors['text_dim']}; font-size: 13px;")
 
         # status dot color depends on server state, not just theme
         if self.server_handle.is_running:

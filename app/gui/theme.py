@@ -91,6 +91,41 @@ QPushButton#PrimaryButton:hover {{
 QLabel#StatusDot {{
     font-size: 14px;
 }}
+QRadioButton, QCheckBox {{
+    spacing: 8px;
+    color: {c['text']};
+}}
+QRadioButton::indicator, QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 2px solid {c['border']};
+    background-color: {c['surface']};
+}}
+QRadioButton::indicator {{
+    border-radius: 9px;
+}}
+QCheckBox::indicator {{
+    border-radius: 4px;
+}}
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {{
+    border-color: {c['accent']};
+}}
+QRadioButton::indicator:checked {{
+    border-color: {c['accent']};
+    background-color: {c['accent']};
+    /* inset ring effect: a lighter dot inside the filled circle */
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+                                 stop:0 {c['surface']}, stop:0.45 {c['surface']},
+                                 stop:0.55 {c['accent']}, stop:1 {c['accent']});
+}}
+QCheckBox::indicator:checked {{
+    border-color: {c['accent']};
+    background-color: {c['accent']};
+}}
+QRadioButton:checked, QCheckBox:checked {{
+    color: {c['accent']};
+    font-weight: 600;
+}}
 QScrollArea {{
     border: none;
     background-color: {c['bg']};
