@@ -6,4 +6,6 @@ venv/
 build/
 dist/
 *.spec
+!localshare.spec
+Output/
 .DS_Store

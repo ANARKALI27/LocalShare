@@ -32,6 +32,38 @@ hit one anyway:
 2. Add it to the `hiddenimports` list near the top of `localshare.spec`.
 3. Rebuild with `pyinstaller --noconfirm localshare.spec`.
 
+## Building a single-file installer (recommended for sharing)
+
+`LocalShare.exe` alone is already standalone, but sharing an installer
+instead means whoever you send it to doesn't need to know where to put
+it or how to make a shortcut — they double-click, click Next a few
+times, and it's installed with a Start Menu entry and (optionally) a
+desktop icon.
+
+One-time setup: install **Inno Setup** (free) from
+https://jrsoftware.org/isinfo.php.
+
+Then, from inside this project folder:
+
+```
+build_installer.bat
+```
+
+This builds `LocalShare.exe` (same as `build.bat`) and packages it
+into `Output\LocalShareSetup.exe` — **that single file is the only
+thing you need to share.** No folder, no `build.bat`, no hunting for
+the `.exe` afterward.
+
+The installer installs per-user (no admin rights needed to install or
+run normally). WebDAV specifically still needs the installed app
+launched via right-click → "Run as administrator" — that's a runtime
+choice each time you want WebDAV, unrelated to how it was installed.
+
+**Before building a new installer to share an update:** bump both
+`APP_VERSION` in `app/version.py` *and* `MyAppVersion` in
+`localshare_setup.iss` — they're separate values (one Python, one
+Inno Setup) and don't sync automatically.
+
 **If the .exe shows a blank/black window or "no Qt platform plugin"
 error:** rebuild with `pyinstaller --noconfirm --collect-all PySide6 localshare.spec`
 — this forces PyInstaller to bundle Qt's platform plugins, which are
@@ -52,15 +84,15 @@ version it's on — typically whoever's PC has the newest build. Enter
 that instance's address (shown in its own app window) and click Check.
 
 If a newer version is found, it tells you but doesn't auto-download —
-open that address in a browser and grab the new `LocalShare.exe` from
-the shared files (the same way you'd share any other file), then
-replace the old one manually. This is deliberate: automatically
-downloading and swapping out a running `.exe` on Windows needs careful
-handling around file locks that isn't safe to ship without testing on
-a real machine.
+open that address in a browser and grab the new `LocalShareSetup.exe`
+(or `LocalShare.exe`) from the shared files, then run/replace
+accordingly. This is deliberate: automatically downloading and
+swapping out a running `.exe` on Windows needs careful handling around
+file locks that isn't safe to ship without testing on a real machine.
 
 Before rebuilding a new version to share, bump `APP_VERSION` in
-`app/version.py` — that's what the update check compares.
+`app/version.py` (and `MyAppVersion` in `localshare_setup.iss` if
+you're building an installer — see above).
 
 ## Accessing from a phone / other device
 
