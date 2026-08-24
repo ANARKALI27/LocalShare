@@ -76,6 +76,14 @@ class ServerHandle:
             port=self.port,
             log_level="warning",
             access_log=False,
+            # Skip uvicorn's own logging.config.dictConfig setup. It
+            # references formatter classes by dotted string path, which
+            # fails to resolve inside a PyInstaller-frozen executable
+            # ("Unable to configure formatter 'default'") even though
+            # the identical code runs fine via `python main.py`. We
+            # don't need colored console logging in a windowed app with
+            # no visible console anyway.
+            log_config=None,
         )
         self._server = uvicorn.Server(config)
 
