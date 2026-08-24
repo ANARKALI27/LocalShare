@@ -17,13 +17,15 @@ Honest limitations (see README for the full explanation):
   - Explorer's WebDAV client (the "WebClient" service) is well
     documented to work unreliably on any port other than 80 (the
     standard WebDAV/HTTP port) — this is a Windows client limitation,
-    not something a server can configure around. Because of this, this
-    server tries to bind port 80 by default, which requires running
-    LocalShare as Administrator on Windows. If it can't get port 80
-    (not running as admin, or something else is using it — IIS, Skype,
-    etc. sometimes do), it fails with a clear error rather than
-    silently falling back to a port that Explorer likely won't accept
-    reliably.
+    not something a server can configure around. Because of this, on
+    Windows this server tries to bind port 80 by default, which
+    requires running LocalShare elevated. Linux's native WebDAV clients
+    (GVFS/Nautilus, Dolphin, davfs2) don't show the same documented
+    restriction, so on Linux/macOS this uses a normal auto-picked port
+    instead — no reason to require sudo for a limitation that appears
+    to be Windows-specific. (This platform difference is reasoned from
+    available documentation, not verified by direct testing on Linux —
+    if WebDAV behaves oddly there, that's useful to know.)
   - Uses "cheroot" (a mature, production-grade WSGI server) rather
     than Python's built-in wsgiref: wsgiref replies with HTTP/1.0 and
     closes the connection after every response, and testing showed
@@ -42,18 +44,17 @@ Network Drive workflow on your actual machines (see README).
 """
 from __future__ import annotations
 
+import platform
 import threading
 
-from app.network.ip import get_lan_ip
+from app.network.ip import find_available_port, get_lan_ip
 from app.state import ShareManager
 
-# The standard WebDAV/HTTP port. Windows Explorer's built-in WebDAV
-# client is documented to work unreliably on any other port, so we
-# deliberately do NOT auto-pick an alternate port the way the main
-# HTTP server does — a WebDAV server on a non-standard port would
-# "work" from Python's side while still failing in Explorer, which is
-# a worse experience than a clear upfront error.
-DEFAULT_WEBDAV_PORT = 80
+# On Windows, Explorer's WebDAV client needs port 80 specifically (see
+# module docstring). Elsewhere, use the normal "pick any free port"
+# behavior — 0 here is a sentinel meaning "auto", not a literal port.
+_IS_WINDOWS = platform.system() == "Windows"
+DEFAULT_WEBDAV_PORT = 80 if _IS_WINDOWS else 0
 
 
 class WebDavHandle:
@@ -84,15 +85,22 @@ class WebDavHandle:
 
     @property
     def explorer_path(self) -> str | None:
-        """The string to paste into Explorer's 'Map Network Drive' -> 'Connect to a website' dialog."""
+        """
+        The connection string to paste into the OS's native file
+        manager to mount this share — Explorer's "Map Network Drive"
+        UNC format on Windows, or a dav:// URI (GVFS/Nautilus, Dolphin)
+        on Linux/macOS.
+        """
         if not self.is_running:
             return None
-        # @port is only included for non-standard ports; omitting it on
-        # port 80 matches the conventional WebDAV UNC format and avoids
-        # giving Explorer one more thing to potentially choke on.
-        if self.port == 80:
-            return f"\\\\{self.host}\\DavWWWRoot"
-        return f"\\\\{self.host}@{self.port}\\DavWWWRoot"
+        if _IS_WINDOWS:
+            # @port is only included for non-standard ports; omitting it
+            # on port 80 matches the conventional WebDAV UNC format and
+            # avoids giving Explorer one more thing to potentially choke on.
+            if self.port == 80:
+                return f"\\\\{self.host}\\DavWWWRoot"
+            return f"\\\\{self.host}@{self.port}\\DavWWWRoot"
+        return f"dav://{self.host}:{self.port}/"
 
     def _build_provider_mapping(self) -> dict[str, str]:
         """
@@ -145,7 +153,11 @@ class WebDavHandle:
             ) from exc
 
         self.host = get_lan_ip()
-        self.port = self.preferred_port
+        # preferred_port == 0 is the "auto-pick" sentinel (used on
+        # non-Windows platforms — see DEFAULT_WEBDAV_PORT above).
+        self.port = (
+            find_available_port(8766) if self.preferred_port == 0 else self.preferred_port
+        )
 
         config = {
             "host": self.host,
@@ -161,28 +173,34 @@ class WebDavHandle:
         app = WsgiDAVApp(config)
 
         self._server = CherootWSGIServer((self.host, self.port), app, numthreads=10)
+        attempted_port = self.port  # save before we clear it below, for accurate error messages
         try:
             self._server.prepare()  # binds the socket; raises here on permission/port conflicts
         except PermissionError:
             self._server = None
             self.host = None
             self.port = None
+            if _IS_WINDOWS:
+                raise RuntimeError(
+                    f"Couldn't bind port {attempted_port} (needed because Windows Explorer's "
+                    "WebDAV client is unreliable on non-standard ports). Close whatever else might "
+                    "be using it (IIS, Skype, another web server) and restart LocalShare elevated "
+                    "— run your terminal itself \"as administrator\" and launch main.py from there. "
+                    "If you'd rather not run elevated, the browser share above works without any "
+                    "special privileges."
+                )
             raise RuntimeError(
-                f"Couldn't bind port {self.preferred_port} (needed because Windows Explorer's "
-                "WebDAV client is unreliable on non-standard ports). Close whatever else might be "
-                "using it (IIS, Skype, another web server) and restart LocalShare as Administrator "
-                "— run your terminal itself \"as administrator\" and launch main.py from there. "
-                "If you'd rather not run as admin, the browser share above works without any "
-                "special privileges."
+                f"Couldn't bind port {attempted_port}: permission denied. "
+                "This is unexpected on this platform — the browser share above works "
+                "without any special privileges either way."
             )
         except OSError as exc:
             self._server = None
             self.host = None
             self.port = None
             raise RuntimeError(
-                f"Couldn't start the WebDAV server on port {self.preferred_port}: {exc}. "
-                "Something else may already be using this port — check for IIS, Skype, or "
-                "another local web server."
+                f"Couldn't start the WebDAV server on port {attempted_port}: {exc}. "
+                "Something else may already be using this port."
             )
 
         self._thread = threading.Thread(target=self._server.serve, daemon=True)

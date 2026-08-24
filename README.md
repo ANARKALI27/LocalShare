@@ -64,6 +64,49 @@ choice each time you want WebDAV, unrelated to how it was installed.
 `localshare_setup.iss` — they're separate values (one Python, one
 Inno Setup) and don't sync automatically.
 
+## Building a .deb package (Debian/Ubuntu)
+
+From inside this project folder, on a Debian-based Linux system:
+
+```
+bash build_deb.sh
+```
+
+This builds a standalone Linux binary (same PyInstaller approach as
+the Windows `.exe`) and packages it into `Output/localshare_<version>_amd64.deb`
+— **that single file is the only thing you need to share** with a
+Debian/Ubuntu user. They install it with:
+
+```
+sudo apt install ./localshare_<version>_amd64.deb
+```
+
+This installs `localshare` to their applications menu and adds a
+`localshare` command to their terminal. No separate Python or pip
+install needed on their end — it's self-contained, same as the exe.
+
+Unlike the Windows installer, the version number here syncs
+automatically from `app/version.py` — no separate file to remember to bump.
+
+**Testing honesty note:** I validated the actual packaging pipeline
+end-to-end (built a real `.deb`, inspected its contents with
+`dpkg-deb --contents`/`--info` to confirm permissions, the symlink,
+and metadata are all correct) using a placeholder binary, since I
+can't install PySide6 in the environment that wrote this code. I
+have *not* been able to `dpkg -i` this on a real Debian/Ubuntu desktop
+and confirm the app actually launches and its shared library
+dependencies (Qt/X11/Wayland) are satisfied — that's the one thing
+only real testing on your end can confirm. If installing reports
+missing shared libraries, that's a normal, fixable thing — tell me
+the exact library name from the error and I'll add it as a `Depends:`
+in `packaging/debian/DEBIAN/control`.
+
+Also worth knowing: on Linux, WebDAV does **not** force port 80 the
+way it does on Windows (that restriction is specific to Windows
+Explorer's client) — it picks a normal port automatically, no `sudo`
+needed. This is based on documentation of Linux's native WebDAV
+clients (GVFS/Nautilus, Dolphin), not direct testing.
+
 **If the .exe shows a blank/black window or "no Qt platform plugin"
 error:** rebuild with `pyinstaller --noconfirm --collect-all PySide6 localshare.spec`
 — this forces PyInstaller to bundle Qt's platform plugins, which are

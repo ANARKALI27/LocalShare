@@ -8,6 +8,7 @@ background thread; the address shown is live and Copy Address works.
 from __future__ import annotations
 
 import os
+import platform
 
 from PySide6.QtCore import Qt, QSettings, QThread, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication
@@ -403,10 +404,11 @@ class MainWindow(QMainWindow):
             self.webdav_status_label.setText(f"WebDAV not started: {exc}")
             self.webdav_status_label.show()
             return
-        self.webdav_status_label.setText(
-            f"WebDAV: paste this into Explorer's 'Map Network Drive' dialog:\n"
-            f"{self.webdav_handle.explorer_path}"
-        )
+        if platform.system() == "Windows":
+            instructions = "WebDAV: paste this into Explorer's 'Map Network Drive' dialog:"
+        else:
+            instructions = "WebDAV: use this address in your file manager's 'Connect to Server':"
+        self.webdav_status_label.setText(f"{instructions}\n{self.webdav_handle.explorer_path}")
         self.webdav_status_label.show()
 
     def _on_server_start_failed(self, error: str) -> None:

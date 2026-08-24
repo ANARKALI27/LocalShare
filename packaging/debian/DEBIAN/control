@@ -1,0 +1,13 @@
+Package: localshare
+Version: 1.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: ANARKALI
+Description: LAN file sharing with browser access
+ LocalShare lets you drag files or folders in, share an address, and
+ have anyone on the same local network download, upload, and chat
+ through a browser — no accounts, no internet required.
+ .
+ This package bundles a self-contained build (PyInstaller), so no
+ separate Python installation or pip packages are needed.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LocalShare
+Comment=LAN file sharing with browser access
+Exec=/usr/bin/localshare
+Icon=localshare
+Terminal=false
+Categories=Network;FileTransfer;

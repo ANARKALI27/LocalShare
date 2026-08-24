@@ -9,3 +9,5 @@ dist/
 !localshare.spec
 Output/
 .DS_Store
+packaging/debian/usr/lib/localshare/LocalShare
+packaging/debian/usr/bin/localshare
