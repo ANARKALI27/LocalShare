@@ -15,6 +15,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from app.network.ip import find_available_port, get_lan_ip
+from app.server.auth import AccessControl
 from app.server.messages import MessageStore
 from app.server.routes import build_router
 from app.state import ShareManager
@@ -26,14 +27,22 @@ class ServerHandle:
     Wraps a running (or stopped) uvicorn server instance.
 
     Usage:
-        handle = ServerHandle(share_manager)
+        handle = ServerHandle(share_manager, access_control)
         handle.start()          # non-blocking, returns once the socket is listening
         handle.address          # "http://192.168.1.105:8765"
         handle.stop()           # blocks briefly until the thread exits
+
+    access_control is owned by the caller (the GUI), not created fresh
+    here — PIN settings need to be configurable BEFORE Start Sharing is
+    clicked, so this class just uses whatever state it's handed rather
+    than resetting it on every start().
     """
 
-    def __init__(self, share_manager: ShareManager, preferred_port: int = 8765) -> None:
+    def __init__(
+        self, share_manager: ShareManager, access_control: AccessControl, preferred_port: int = 8765
+    ) -> None:
         self.share_manager = share_manager
+        self.access_control = access_control
         self.preferred_port = preferred_port
 
         self._server: uvicorn.Server | None = None
@@ -68,7 +77,15 @@ class ServerHandle:
         self.resumable_manager = ResumableUploadManager()
 
         app = FastAPI(title="LocalShare")
-        app.include_router(build_router(self.share_manager, self.message_store, self.resumable_manager))
+        app.include_router(
+            build_router(self.share_manager, self.message_store, self.resumable_manager, self.access_control)
+        )
+
+        # Lazy import (see auth_middleware.py) — keeps that module
+        # importable in environments without starlette/fastapi installed.
+        from app.server.auth_middleware import build_auth_middleware_class
+
+        app.add_middleware(build_auth_middleware_class(), access_control=self.access_control)
 
         config = uvicorn.Config(
             app,

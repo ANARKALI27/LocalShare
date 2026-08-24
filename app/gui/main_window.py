@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QSettings, QThread, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QFileDialog,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -37,7 +39,9 @@ from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import DARK, LIGHT, build_stylesheet
 from app.paths import ICON_PATH
 from app.gui.update_checker import check_for_update
+from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
+from app.server.tunnel import TunnelHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
 from app.version import APP_VERSION
@@ -90,6 +94,31 @@ class _UpdateCheckWorker(QThread):
         self.finished.emit(result)
 
 
+class _TunnelStartWorker(QThread):
+    """
+    Starts the ngrok tunnel off the GUI thread — ngrok.connect() does
+    real network I/O (downloading the ngrok binary on first use,
+    establishing the tunnel), which would freeze the window if run
+    directly on the main thread.
+    """
+
+    finished_ok = Signal(str)  # public_url
+    finished_error = Signal(str)  # error message
+
+    def __init__(self, tunnel_handle: TunnelHandle, local_port: int, authtoken: str) -> None:
+        super().__init__()
+        self._handle = tunnel_handle
+        self._local_port = local_port
+        self._authtoken = authtoken
+
+    def run(self) -> None:
+        try:
+            public_url = self._handle.start(self._local_port, self._authtoken)
+            self.finished_ok.emit(public_url)
+        except RuntimeError as exc:
+            self.finished_error.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -106,10 +135,14 @@ class MainWindow(QMainWindow):
         self.share_manager = ShareManager()
         self.share_manager.on_change(self._refresh_shared_list)
 
-        self.server_handle = ServerHandle(self.share_manager)
+        self.access_control = AccessControl()
+        self.server_handle = ServerHandle(self.share_manager, self.access_control)
         self.webdav_handle = WebDavHandle(self.share_manager)
+        self.tunnel_handle = TunnelHandle()
         self._start_worker: _ServerStartWorker | None = None
         self._stop_worker: _ServerStopWorker | None = None
+        self._tunnel_worker: _TunnelStartWorker | None = None
+        self._local_address: str | None = None
 
         self._build_ui()
 
@@ -192,6 +225,62 @@ class MainWindow(QMainWindow):
 
         # WebDAV (experimental — see tooltip). Off by default: it's the
         # weaker-security, less-reliable path, so it should be opt-in.
+        # -- Sharing mode -----------------------------------------------------------
+        mode_label = QLabel("SHARING MODE")
+        mode_label.setObjectName("SectionLabel")
+        root.addWidget(mode_label)
+
+        mode_row = QHBoxLayout()
+        self.local_only_radio = QRadioButton("Local Network Only")
+        self.local_only_radio.setChecked(True)
+        self.internet_radio = QRadioButton("Local Network + Internet")
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.addButton(self.local_only_radio)
+        self.mode_button_group.addButton(self.internet_radio)
+        mode_row.addWidget(self.local_only_radio)
+        mode_row.addWidget(self.internet_radio)
+        root.addLayout(mode_row)
+        self.internet_radio.toggled.connect(self._on_mode_changed)
+
+        self.ngrok_token_input = QLineEdit()
+        self.ngrok_token_input.setPlaceholderText(
+            "ngrok authtoken — free at dashboard.ngrok.com/get-started/your-authtoken"
+        )
+        self.ngrok_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        saved_ngrok_token = QSettings("LocalShare", "LocalShare").value("ngrok_authtoken", "")
+        if saved_ngrok_token:
+            self.ngrok_token_input.setText(saved_ngrok_token)
+        self.ngrok_token_input.hide()
+        root.addWidget(self.ngrok_token_input)
+
+        self.tunnel_status_label = QLabel("")
+        self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        self.tunnel_status_label.setWordWrap(True)
+        self.tunnel_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.tunnel_status_label.hide()
+        root.addWidget(self.tunnel_status_label)
+
+        # -- PIN protection -----------------------------------------------------------
+        pin_row = QHBoxLayout()
+        self.pin_checkbox = QCheckBox("Require PIN to access")
+        self.pin_checkbox.toggled.connect(self._on_pin_checkbox_toggled)
+        pin_row.addWidget(self.pin_checkbox)
+        self.custom_pin_input = QLineEdit()
+        self.custom_pin_input.setPlaceholderText("Custom PIN (optional)")
+        self.custom_pin_input.setMaxLength(12)
+        self.custom_pin_input.hide()
+        pin_row.addWidget(self.custom_pin_input)
+        root.addLayout(pin_row)
+
+        self.pin_display_label = QLabel("")
+        self.pin_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pin_display_label.setStyleSheet(
+            f"color: {self.theme_colors['accent']}; font-size: 22px; font-weight: 700; letter-spacing: 4px;"
+        )
+        self.pin_display_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pin_display_label.hide()
+        root.addWidget(self.pin_display_label)
+
         self.webdav_checkbox = QCheckBox("Also enable WebDAV (Explorer-mappable, experimental)")
         self.webdav_checkbox.setToolTip(
             "Lets Windows Explorer map this share as a network drive via\n"
@@ -353,6 +442,31 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if self.internet_radio.isChecked():
+            authtoken = self.ngrok_token_input.text().strip()
+            if not authtoken:
+                QMessageBox.information(
+                    self,
+                    "ngrok authtoken required",
+                    "Internet sharing needs a free ngrok authtoken. Get one at\n"
+                    "dashboard.ngrok.com/get-started/your-authtoken and paste it in "
+                    "before starting.",
+                )
+                return
+            QSettings("LocalShare", "LocalShare").setValue("ngrok_authtoken", authtoken)
+
+        # Configure PIN protection BEFORE the server starts, so the
+        # very first request it ever serves is already covered — not
+        # a window where the share is briefly open before the PIN
+        # kicks in.
+        if self.pin_checkbox.isChecked():
+            custom_pin = self.custom_pin_input.text().strip() or None
+            actual_pin = self.access_control.enable(pin=custom_pin)
+            self._show_pin(actual_pin)
+        else:
+            self.access_control.disable()
+            self.pin_display_label.hide()
+
         self.toggle_server_btn.setEnabled(False)
         self.toggle_server_btn.setText("Starting…")
 
@@ -361,20 +475,83 @@ class MainWindow(QMainWindow):
         self._start_worker.finished_error.connect(self._on_server_start_failed)
         self._start_worker.start()
 
+    def _show_pin(self, pin: str) -> None:
+        self.pin_display_label.setText(f"PIN: {pin}")
+        self.pin_display_label.show()
+
+    def _build_share_url(self, base_address: str) -> str:
+        """Appends the access token to a share address when PIN protection
+        is on, so a QR code or copied link grants one-tap access instead
+        of forcing the PIN to be retyped."""
+        if self.access_control.enabled:
+            return f"{base_address}/?token={self.access_control.token}"
+        return base_address
+
     def _on_server_started(self, address: str) -> None:
         self.status_dot.setText("●")
         self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
         self.status_label.setText("Server: Running")
-        self.address_label.setText(f"Address: {address}")
+        self._local_address = address
+        self.address_label.setText(f"Address: {self._build_share_url(address)}")
         self.copy_address_btn.setEnabled(True)
         self.toggle_server_btn.setText("Stop Sharing")
         self.toggle_server_btn.setEnabled(True)
-        self.webdav_checkbox.setEnabled(False)  # locked while running to avoid a confusing mid-session toggle
+        # Locked while running to avoid a confusing mid-session change —
+        # switching modes or PIN settings means stopping and restarting.
+        self.webdav_checkbox.setEnabled(False)
+        self.local_only_radio.setEnabled(False)
+        self.internet_radio.setEnabled(False)
+        self.pin_checkbox.setEnabled(False)
+        self.custom_pin_input.setEnabled(False)
+        self.ngrok_token_input.setEnabled(False)
 
-        self._show_qr_code(address)
+        self._show_qr_code(self._build_share_url(address))
 
         if self.webdav_checkbox.isChecked():
             self._start_webdav()
+
+        if self.internet_radio.isChecked():
+            self._start_tunnel()
+
+    def _start_tunnel(self) -> None:
+        port = self.server_handle.port
+        authtoken = self.ngrok_token_input.text().strip()
+        self.tunnel_status_label.setText("Starting internet tunnel…")
+        self.tunnel_status_label.show()
+
+        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port, authtoken)
+        self._tunnel_worker.finished_ok.connect(self._on_tunnel_started)
+        self._tunnel_worker.finished_error.connect(self._on_tunnel_failed)
+        self._tunnel_worker.start()
+
+    def _on_tunnel_started(self, public_url: str) -> None:
+        share_url = self._build_share_url(public_url)
+        self.tunnel_status_label.setText(
+            f"Internet address: {share_url}\n"
+            f"(First-time visitors may see a one-time ngrok warning page — that's normal.)"
+        )
+        self.address_label.setText(f"Address: {share_url}")
+        self._show_qr_code(share_url)
+
+    def _on_tunnel_failed(self, error: str) -> None:
+        self.tunnel_status_label.setText(f"Internet tunnel not started: {error}")
+
+    def _on_mode_changed(self, internet_checked: bool) -> None:
+        self.ngrok_token_input.setVisible(internet_checked)
+        if internet_checked:
+            # Internet exposure without a PIN is a real risk (see
+            # tunnel.py / README) — force it on and don't allow turning
+            # it off while this mode is selected.
+            self.pin_checkbox.setChecked(True)
+            self.pin_checkbox.setEnabled(False)
+        else:
+            self.pin_checkbox.setEnabled(True)
+            self.tunnel_status_label.hide()
+
+    def _on_pin_checkbox_toggled(self, checked: bool) -> None:
+        self.custom_pin_input.setVisible(checked)
+        if not checked:
+            self.pin_display_label.hide()
 
     def _show_qr_code(self, address: str) -> None:
         pixmap = generate_qr_pixmap(address)
@@ -448,6 +625,14 @@ class MainWindow(QMainWindow):
             self.webdav_handle.stop()
         self.webdav_status_label.hide()
         self.webdav_checkbox.setEnabled(True)
+
+        if self.tunnel_handle.is_running:
+            self.tunnel_handle.stop()
+        self.tunnel_status_label.hide()
+
+        self.access_control.disable()
+        self.pin_display_label.hide()
+
         self._hide_qr_code()
 
         self.status_dot.setText("○")
@@ -458,8 +643,20 @@ class MainWindow(QMainWindow):
         self.toggle_server_btn.setText("Start Sharing")
         self.toggle_server_btn.setEnabled(True)
 
+        self.local_only_radio.setEnabled(True)
+        self.internet_radio.setEnabled(True)
+        self.pin_checkbox.setEnabled(True)
+        self.custom_pin_input.setEnabled(True)
+        self.ngrok_token_input.setEnabled(True)
+        self._local_address = None
+
     def _copy_address(self) -> None:
-        address = self.server_handle.address
+        if self.tunnel_handle.is_running and self.tunnel_handle.public_url:
+            address = self._build_share_url(self.tunnel_handle.public_url)
+        else:
+            address = self.server_handle.address
+            if address:
+                address = self._build_share_url(address)
         if address:
             QGuiApplication.clipboard().setText(address)
 
@@ -501,6 +698,10 @@ class MainWindow(QMainWindow):
         dim_style = f"color: {colors['text_dim']}; font-size: 12px;"
         self.webdav_status_label.setStyleSheet(dim_style)
         self.qr_caption_label.setStyleSheet(dim_style)
+        self.tunnel_status_label.setStyleSheet(dim_style)
+        self.pin_display_label.setStyleSheet(
+            f"color: {colors['accent']}; font-size: 22px; font-weight: 700; letter-spacing: 4px;"
+        )
         self.credit_label.setStyleSheet(
             f"color: {colors['text_dim']}; font-size: 11px; letter-spacing: 0.5px;"
         )
@@ -572,4 +773,6 @@ class MainWindow(QMainWindow):
             self.server_handle.stop()
         if self.webdav_handle.is_running:
             self.webdav_handle.stop()
+        if self.tunnel_handle.is_running:
+            self.tunnel_handle.stop()
         event.accept()

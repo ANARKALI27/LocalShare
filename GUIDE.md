@@ -20,6 +20,8 @@ browser to download, upload, or chat. That's the whole idea.
 - **QR code** — scan it with a phone camera to open the share instantly,
   no typing an address
 - **Dark & light themes**, plus a custom accent color picker
+- **PIN protection** — lock your share behind a 6-digit code so only people you give it to can access it
+- **Share over the internet, not just Wi-Fi** (new in v2) — reach someone who isn't on your network
 - **Windows Explorer / Linux file manager integration** (optional — see note below)
 - **Check for Updates** button to see if a newer version is available
 
@@ -44,33 +46,42 @@ type `localshare` in a terminal.
 
 1. **Open LocalShare.**
 2. **Drag a file or folder into the window** (or click "Add Files…" / "Add Folder…").
-3. **Click "Start Sharing."** An address like `http://192.168.1.105:8765`
-   appears, along with a QR code.
-4. **Give that address (or QR code) to whoever you're sharing with** — they
-   need to be on the same Wi-Fi/network as you.
-5. **They open it in any web browser.** They'll see everything you've shared
-   and can download it.
-6. **They can send things back too** — inside a shared folder, they'll see
+3. **Choose a sharing mode:**
+   - **Local Network Only** (default) — for people on the same Wi-Fi as you. No PIN needed, though you can turn one on.
+   - **Local Network + Internet** — for someone who isn't on your network. Requires a free ngrok account (one-time setup, see below) and **automatically requires a PIN** — you can't turn that off in this mode, since anyone with the link could otherwise reach it.
+4. **Click "Start Sharing."** An address appears, along with a QR code. If PIN protection is on, the PIN shows on screen too — tell the other person what it is (or just send the QR code / link, which unlocks automatically).
+5. **Give that address (or QR code) to whoever you're sharing with.**
+6. **They open it in any web browser.** If a PIN is set and they typed the address by hand, they'll be asked to enter it once. They'll see everything you've shared and can download it.
+7. **They can send things back too** — inside a shared folder, they'll see
    "Upload Files" / "Upload Folder" buttons.
-7. **Want to chat?** Click the "Messages" tab at the top — works from either side,
+8. **Want to chat?** Click the "Messages" tab at the top — works from either side,
    supports photos and videos.
-8. **When you're done, click "Stop Sharing."**
+9. **When you're done, click "Stop Sharing."**
 
-That's genuinely the whole workflow — nothing to configure, no accounts to make.
+### Setting up internet sharing (one-time)
+
+1. Go to https://dashboard.ngrok.com/get-started/your-authtoken and make a free account
+2. Copy your authtoken
+3. In LocalShare, select "Local Network + Internet" mode and paste the token in
+4. That's it — it's remembered for next time
+
+**One thing to expect:** the first time someone opens your internet link, they'll briefly see a warning page from ngrok before reaching LocalShare. That's normal ngrok behavior, not a problem with the app — they just click through.
 
 ---
 
 ## 💡 A few things worth knowing
 
-- **Both people need to be on the same network** (same Wi-Fi, or same router).
-  This doesn't work over the internet — it's for LAN use.
-- **There's currently no password/PIN protection** — anyone who can reach your
-  address on the network can access what you've shared. Fine for home/office
-  use with people you trust; don't rely on it for sensitive files.
+- **Local Network Only mode needs both people on the same Wi-Fi/router** —
+  that hasn't changed. Use Internet mode (above) if that's not possible.
+- **PIN protection is off by default in Local Network mode** — turn it on
+  yourself if you want it; anyone who reaches your address without it can
+  browse, download, upload, and message freely. It's automatically forced
+  on in Internet mode.
 - **The Explorer/file-manager integration (WebDAV)** is a bonus feature for
   people who want their file manager to show the share like a regular folder.
   It's labeled "experimental" for a reason — it can be finicky depending on
-  your system. The browser method above always works and is the reliable path.
+  your system, and it never supports a PIN even if one is set elsewhere.
+  The browser method above always works and is the reliable path.
 
 ---
 

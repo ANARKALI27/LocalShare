@@ -137,6 +137,37 @@ Before rebuilding a new version to share, bump `APP_VERSION` in
 `app/version.py` (and `MyAppVersion` in `localshare_setup.iss` if
 you're building an installer — see above).
 
+## Internet Sharing (v2)
+
+By default, LocalShare only works on your local network ("Local
+Network Only" mode) — that's still the right choice for most sharing
+between people on the same Wi-Fi. "Local Network + Internet" mode
+exists for when the other person genuinely isn't on your network.
+
+**How it works:** an [ngrok](https://ngrok.com) tunnel opens an
+outbound connection from your machine to ngrok's servers and hands
+back a public HTTPS address that forwards to your local server. No
+port forwarding or router configuration needed — this works even
+behind NAT/CGNAT, since the connection is initiated from your side.
+
+**Setup:**
+1. Create a free ngrok account and grab your authtoken at
+   https://dashboard.ngrok.com/get-started/your-authtoken
+2. In LocalShare, select "Local Network + Internet" mode and paste
+   the authtoken in
+3. PIN protection turns on automatically and can't be turned off in
+   this mode — see Security notes above for why
+4. Start Sharing as normal; the public address appears once the
+   tunnel connects (takes a few seconds)
+
+**Known limitations, not bugs:**
+- ngrok's free tier shows a one-time interstitial warning page to
+  first-time visitors before they reach LocalShare — this is ngrok's
+  own behavior, unrelated to this app
+- Free tier bandwidth/request limits apply (ngrok's, not LocalShare's)
+- The tunnel closes when you click Stop Sharing or close the app —
+  it's not a persistent public address
+
 ## Accessing from a phone / other device
 
 The browser share (files + messages) works from any device's browser
@@ -166,13 +197,19 @@ localshare/
 
 - Only explicitly shared files/folders are accessible — path traversal
   is blocked (see `app/server/security.py`).
-- **There is currently no access control on the browser share or
-  messaging** — anyone who can reach the address on your LAN can
-  browse, download, upload, and read/send messages. Earlier notes in
-  this project referred to a PIN-protection option as the contrast to
-  WebDAV's lack of one, but that PIN feature was never actually built.
-  If you need access control, that's a real gap to close before
-  relying on this for anything sensitive — ask to have it added.
+- **PIN protection is available and off by default.** Turn on
+  "Require PIN to access" before Start Sharing to require a 6-digit
+  (or custom) PIN for the browser share and messaging — see
+  `app/server/auth.py`. Without it, anyone who can reach the address
+  on your network can browse, download, upload, and read/send messages.
+- **PIN protection is mandatory, not optional, in "Local Network +
+  Internet" mode** — the app forces it on and won't let you turn it
+  off while that mode is selected, since the share is then reachable
+  by anyone who finds the URL, not just people on your network.
 - WebDAV has no access control at all and never will by design (see
-  `app/server/webdav_server.py` for why) — anonymous-only.
-- None of this is safe to expose to the internet — LAN use only.
+  `app/server/webdav_server.py` for why) — anonymous-only, regardless
+  of your PIN setting elsewhere. Don't rely on WebDAV for anything
+  you wouldn't want fully public on your LAN.
+- "Local Network Only" mode (the default) is LAN-only, same as
+  always. "Local Network + Internet" mode uses an ngrok tunnel — see
+  the Internet Sharing section below.

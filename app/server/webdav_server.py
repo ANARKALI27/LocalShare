@@ -3,13 +3,13 @@ WebDAV server, for people who specifically want Windows Explorer to
 browse the share like a mapped network drive.
 
 Honest limitations (see README for the full explanation):
-  - Anonymous access only. Windows Explorer's WebDAV client refuses to
-    send Basic-auth credentials over plain HTTP by default, so there's
-    no reasonable way to add access control here even if the app
-    supported it elsewhere.
-  - NOTE: no part of this app (browser share, WebDAV, or messaging)
-    currently has access control — this isn't a WebDAV-specific gap,
-    it's a project-wide one. See README.md security notes.
+  - Anonymous access only, permanently — Windows Explorer's WebDAV
+    client refuses to send Basic-auth credentials over plain HTTP by
+    default, so there's no reasonable way to add PIN/password
+    protection here even now that the browser share supports it (see
+    app/server/auth.py). If you need access control, use the browser
+    share instead — WebDAV will never have it, by design, not because
+    it hasn't been built yet.
   - Only shared FOLDERS appear over WebDAV, not individually-shared
     single files — WebDAV publishes filesystem roots, and there's no
     safe way to expose one file without exposing its whole parent

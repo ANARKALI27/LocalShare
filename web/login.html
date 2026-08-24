@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalShare — Enter PIN</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/login.css" />
+  <script src="/static/theme.js"></script>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-title">LocalShare</div>
+      <div class="login-subtitle">This share is protected — enter the PIN to continue</div>
+
+      __ERROR_BLOCK__
+
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="__NEXT_PATH__" />
+        <input
+          type="text"
+          name="pin"
+          class="pin-input"
+          inputmode="numeric"
+          autocomplete="off"
+          placeholder="••••••"
+          autofocus
+        />
+        <button type="submit" class="login-btn">Unlock</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

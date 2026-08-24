@@ -22,6 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from app.paths import WEB_DIR
+from app.server.auth import AccessControl
+from app.server.auth_middleware import COOKIE_NAME
 from app.server.messages import MessageStore, Attachment
 from app.version import APP_VERSION
 from app.server.security import PathSecurityError, safe_join
@@ -123,7 +125,10 @@ def _file_stream_response(request: Request, target: str, name: str, inline: bool
 
 
 def build_router(
-    share_manager: ShareManager, message_store: MessageStore, resumable_manager: ResumableUploadManager
+    share_manager: ShareManager,
+    message_store: MessageStore,
+    resumable_manager: ResumableUploadManager,
+    access_control: AccessControl,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -137,6 +142,32 @@ def build_router(
     def messages_page() -> HTMLResponse:
         with open(os.path.join(WEB_DIR, "messages.html"), "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
+
+    # -- PIN login -----------------------------------------------------------
+    @router.get("/login", response_class=HTMLResponse)
+    def login_page(next: str = "/", error: int = 0) -> HTMLResponse:
+        with open(os.path.join(WEB_DIR, "login.html"), "r", encoding="utf-8") as f:
+            html = f.read()
+        error_block = '<div class="login-error">Incorrect PIN — try again.</div>' if error else ""
+        html = html.replace("__ERROR_BLOCK__", error_block)
+        # "next" comes from our own redirect (a server-controlled path,
+        # not raw user input reflected back), but escape defensively
+        # anyway since it still ends up in an HTML attribute.
+        safe_next = (next or "/").replace('"', "&quot;")
+        html = html.replace("__NEXT_PATH__", safe_next)
+        return HTMLResponse(html)
+
+    @router.post("/login")
+    def login_submit(pin: str = Form(...), next: str = Form(default="/")):
+        from fastapi.responses import RedirectResponse
+
+        if access_control.verify_pin(pin):
+            response = RedirectResponse(url=next or "/", status_code=303)
+            response.set_cookie(
+                COOKIE_NAME, access_control.token, httponly=True, samesite="lax"
+            )
+            return response
+        return RedirectResponse(url=f"/login?next={next or '/'}&error=1", status_code=303)
 
     @router.get("/api/status")
     def status() -> dict:
