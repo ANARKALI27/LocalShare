@@ -42,6 +42,15 @@ chmod 755 packaging/debian/usr/lib/localshare/LocalShare
 mkdir -p packaging/debian/usr/bin
 ln -sf /usr/lib/localshare/LocalShare packaging/debian/usr/bin/localshare
 
+# Debian requires maintainer scripts (postinst, preinst, postrm, prerm)
+# to be executable, or dpkg-deb refuses to build the package. Setting
+# this explicitly here rather than trusting it survived however these
+# files got onto this machine (git clone, zip extract, etc. can all
+# silently drop the executable bit depending on the tool used).
+if [ -f "packaging/debian/DEBIAN/postinst" ]; then
+    chmod 755 packaging/debian/DEBIAN/postinst
+fi
+
 mkdir -p Output
 DEB_NAME="localshare_${APP_VERSION}_amd64.deb"
 dpkg-deb --build --root-owner-group packaging/debian "Output/${DEB_NAME}"
