@@ -18,6 +18,17 @@ fi
 echo
 echo "Step 2: Assembling the .deb package..."
 
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+    echo
+    echo "dpkg-deb not found. It's part of the base 'dpkg' package on Debian/Ubuntu"
+    echo "(already present there by default). On other distros it may need installing:"
+    echo "  Arch/Manjaro: sudo pacman -S dpkg"
+    echo "  Fedora:       sudo dnf install dpkg"
+    echo "If it's not packaged for your distro, build this step on an actual"
+    echo "Debian/Ubuntu machine, VM, or container instead."
+    exit 1
+fi
+
 # Pull the version straight from app/version.py so the two files can't
 # drift out of sync the way the Windows installer's version has to be
 # kept in sync by hand.
