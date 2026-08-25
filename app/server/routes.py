@@ -56,6 +56,19 @@ def _split_path(path: str) -> list[str]:
     return [p for p in path.split("/") if p not in ("", ".")]
 
 
+def _is_update_package(filename: str) -> bool:
+    """
+    True if a filename looks like a LocalShare installer/binary —
+    used to auto-detect an update package among someone's shared
+    files by naming convention, so distributing an update is just
+    "drag the new LocalShare.exe/.deb into the app and share it,"
+    the same as sharing anything else, without needing a separate
+    "mark this as the update" step.
+    """
+    name_lower = filename.lower()
+    return "localshare" in name_lower and name_lower.endswith((".exe", ".deb"))
+
+
 def _resolve_target(share_manager: ShareManager, item_id: str, rel_path: str) -> tuple[str, str]:
     """
     Resolve (item_id, rel_path) to an absolute filesystem path, going
@@ -176,6 +189,26 @@ def build_router(
     @router.get("/api/version")
     def version() -> dict:
         return {"app": "LocalShare", "version": APP_VERSION}
+
+    @router.get("/api/latest-build")
+    def latest_build() -> dict:
+        """
+        Looks for a shared file that appears to be a LocalShare
+        installer/binary (matched by filename, not by any special
+        designation) — so distributing an update is just "drag the new
+        LocalShare.exe/.deb into the app and share it," the same as
+        sharing anything else. Returns the first match found.
+        """
+        for item in share_manager.all_items():
+            if item.is_dir or not item.exists:
+                continue
+            if _is_update_package(item.name):
+                return {
+                    "available": True,
+                    "name": item.name,
+                    "download_url": f"/download?item={item.id}&path=",
+                }
+        return {"available": False}
 
     @router.get("/ping")
     def ping() -> dict:

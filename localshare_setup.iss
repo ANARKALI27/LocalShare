@@ -26,6 +26,17 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; Lets the installer detect and gracefully close a running LocalShare
+; instance before installing — needed for the in-app auto-update flow
+; (a running .exe's file is locked; without this, launching the new
+; installer over a still-open old version would just fail or hang).
+CloseApplications=yes
+CloseApplicationsFilter=LocalShare.exe
+; Not using RestartApplications: it only actually relaunches an app
+; that's registered via Windows' RegisterApplicationRestart API, which
+; this app doesn't call — setting it wouldn't do anything real. The
+; [Run] section below already offers to launch LocalShare after
+; install finishes, which covers this without needing that API.
 OutputDir=Output
 OutputBaseFilename=LocalShareSetup
 Compression=lzma

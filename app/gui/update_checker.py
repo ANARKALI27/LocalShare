@@ -1,18 +1,26 @@
 """
 Update checking: compares this app's version against another running
 LocalShare instance's version (queried over the network) and reports
-whether a newer one is available.
+whether a newer one is available. Also supports finding and
+downloading an installer file the other instance happens to be
+sharing (matched by filename — see routes.py's /api/latest-build).
 
-Deliberately does NOT attempt to download-and-replace the running exe
-automatically — that requires carefully choreographing around Windows
+Deliberately does NOT attempt to replace the running exe's own files
+directly — that requires carefully choreographing around Windows
 locking the file of a running executable, which isn't something to
-ship without being able to test on real Windows. Instead this points
-the person to the existing, already-reliable file-sharing mechanism to
-grab the new build.
+ship without being able to test on real Windows. Instead, once a new
+installer is downloaded, it's handed to the OS's own "open with
+default app" mechanism — the official Inno Setup installer (Windows)
+or package manager (Linux) then does the actual replacing, using
+mechanisms that are already built and tested for exactly this.
 """
 from __future__ import annotations
 
 import json
+import os
+import platform
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -106,3 +114,80 @@ def check_for_update(address: str, current_version: str, timeout: float = 5.0) -
 
     is_newer = compare_versions(remote_version, current_version) > 0
     return UpdateCheckResult(ok=True, remote_version=remote_version, is_newer=is_newer)
+
+
+class LatestBuildResult:
+    def __init__(self, available: bool, name: str | None = None, download_url: str | None = None) -> None:
+        self.available = available
+        self.name = name
+        self.download_url = download_url
+
+
+def find_latest_build(address: str, timeout: float = 5.0) -> LatestBuildResult:
+    """
+    Asks the other instance whether it's sharing something that looks
+    like a LocalShare installer (see routes.py's /api/latest-build).
+    Never raises — any failure just comes back as "not available"
+    rather than surfacing a separate error, since this is a bonus on
+    top of the version check, not something that should itself block
+    reporting "yes, an update exists."
+    """
+    normalized = normalize_address(address)
+    if not normalized:
+        return LatestBuildResult(available=False)
+
+    try:
+        with urllib.request.urlopen(f"{normalized}/api/latest-build", timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
+        return LatestBuildResult(available=False)
+
+    if not data.get("available"):
+        return LatestBuildResult(available=False)
+
+    return LatestBuildResult(
+        available=True, name=data.get("name"), download_url=data.get("download_url")
+    )
+
+
+def download_build(address: str, download_url: str, filename: str, timeout: float = 30.0) -> str:
+    """
+    Streams the installer file to a temp directory. Returns the local
+    path it was saved to. Raises RuntimeError with a clear message on
+    any failure — caller (a background thread) is expected to catch
+    this and report it rather than let it propagate raw.
+    """
+    normalized = normalize_address(address)
+    url = f"{normalized}{download_url}"
+
+    dest_dir = tempfile.mkdtemp(prefix="localshare_update_")
+    dest_path = os.path.join(dest_dir, filename)
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response, open(dest_path, "wb") as out:
+            while True:
+                chunk = response.read(1024 * 1024)  # 1MB at a time — same chunking discipline as the rest of the app
+                if not chunk:
+                    break
+                out.write(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Couldn't download the update: {exc}") from exc
+
+    return dest_path
+
+
+def open_with_default_app(path: str) -> None:
+    """
+    Hands the downloaded file to the OS's own "open with default app"
+    mechanism — the Inno Setup installer on Windows, or the desktop's
+    package-manager GUI on Linux for a .deb. This is the actual "install"
+    step, and it's mechanisms that are already built and tested for
+    exactly this, not something invented here.
+    """
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(path)  # noqa: S606 — the standard, correct way to do this on Windows
+    elif system == "Darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])

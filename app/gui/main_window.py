@@ -14,9 +14,11 @@ from PySide6.QtCore import Qt, QSettings, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -36,12 +38,17 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.drop_zone import DropZone
-from app.gui.gradient_background import AnimatedGradientBackground
+from app.gui.gradient_background import AnimatedGradientBackground, STYLES
 from app.gui.hover_button import HoverGlowButton
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import DARK, LIGHT, build_stylesheet
 from app.paths import ICON_PATH
-from app.gui.update_checker import check_for_update
+from app.gui.update_checker import (
+    check_for_update,
+    download_build,
+    find_latest_build,
+    open_with_default_app,
+)
 from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
 from app.server.tunnel import TunnelHandle
@@ -83,10 +90,15 @@ class _ServerStopWorker(QThread):
 
 
 class _UpdateCheckWorker(QThread):
-    """Runs the network request off the GUI thread so a slow/unreachable
-    address doesn't freeze the window."""
+    """
+    Runs the network request off the GUI thread so a slow/unreachable
+    address doesn't freeze the window. Also checks whether the other
+    instance is sharing something that looks like an installer, so an
+    "Install Now" option is ready immediately rather than needing a
+    second round-trip after the user decides they want it.
+    """
 
-    finished = Signal(object)  # UpdateCheckResult
+    finished = Signal(object, object)  # UpdateCheckResult, LatestBuildResult | None
 
     def __init__(self, address: str) -> None:
         super().__init__()
@@ -94,7 +106,29 @@ class _UpdateCheckWorker(QThread):
 
     def run(self) -> None:
         result = check_for_update(self._address, APP_VERSION)
-        self.finished.emit(result)
+        build_result = find_latest_build(self._address) if (result.ok and result.is_newer) else None
+        self.finished.emit(result, build_result)
+
+
+class _UpdateDownloadWorker(QThread):
+    """Downloads the update installer off the GUI thread — this can take
+    a while for a large file, and must not freeze the window."""
+
+    finished_ok = Signal(str)  # local file path
+    finished_error = Signal(str)
+
+    def __init__(self, address: str, download_url: str, filename: str) -> None:
+        super().__init__()
+        self._address = address
+        self._download_url = download_url
+        self._filename = filename
+
+    def run(self) -> None:
+        try:
+            local_path = download_build(self._address, self._download_url, self._filename)
+            self.finished_ok.emit(local_path)
+        except RuntimeError as exc:
+            self.finished_error.emit(str(exc))
 
 
 class _TunnelStartWorker(QThread):
@@ -147,6 +181,8 @@ class MainWindow(QMainWindow):
         self._tunnel_worker: _TunnelStartWorker | None = None
         self._local_address: str | None = None
         self._auto_update_worker: _UpdateCheckWorker | None = None
+        self._update_download_worker: _UpdateDownloadWorker | None = None
+        self._last_checked_address: str | None = None
 
         self._build_ui()
 
@@ -206,11 +242,17 @@ class MainWindow(QMainWindow):
         self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
         self.theme_toggle_btn.clicked.connect(self._toggle_theme)
 
+        self.gradient_style_combo = QComboBox()
+        self.gradient_style_combo.addItems(STYLES)
+        self.gradient_style_combo.setEnabled(False)  # matches checkbox starting unchecked
+        self.gradient_style_combo.currentTextChanged.connect(self.gradient_background.set_style)
+
         self.gradient_bg_checkbox = QCheckBox("🌈 Animated gradient background")
         self.gradient_bg_checkbox.setToolTip(
             "A slowly shifting gradient behind the window content, instead of a flat color."
         )
         self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
+        self.gradient_bg_checkbox.toggled.connect(self.gradient_style_combo.setEnabled)
 
         self._build_settings_dialog()
 
@@ -389,10 +431,17 @@ class MainWindow(QMainWindow):
         # any internet server, since this app has no central host.
         update_row = QHBoxLayout()
         self.update_source_input = QLineEdit()
-        self.update_source_input.setPlaceholderText("Update source address (e.g. 192.168.1.104:8765)")
         saved_source = QSettings("LocalShare", "LocalShare").value("update_source", "")
-        if saved_source:
-            self.update_source_input.setText(saved_source)
+        # Shown as a placeholder hint, not pre-filled text — the field
+        # starts empty and ready to type a new address into, rather
+        # than making you delete the old one first. The saved address
+        # still works automatically for the startup auto-check (below),
+        # which reads it directly rather than from this field's text.
+        self.update_source_input.setPlaceholderText(
+            f"e.g. 192.168.1.104:8765 (last used: {saved_source})"
+            if saved_source
+            else "Update source address (e.g. 192.168.1.104:8765)"
+        )
         update_row.addWidget(self.update_source_input, stretch=1)
 
         self.check_update_btn = HoverGlowButton("Check for Updates", glow_color=self.theme_colors["accent"])
@@ -872,6 +921,12 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.gradient_bg_checkbox)
 
+        gradient_style_row = QHBoxLayout()
+        gradient_style_row.addWidget(QLabel("Gradient style"))
+        gradient_style_row.addStretch()
+        gradient_style_row.addWidget(self.gradient_style_combo)
+        layout.addLayout(gradient_style_row)
+
         close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn)
@@ -885,6 +940,10 @@ class MainWindow(QMainWindow):
     def _check_for_updates(self) -> None:
         address = self.update_source_input.text().strip()
         if not address:
+            # field is empty (by design — see _build_ui) — fall back to
+            # whatever was used last time instead of forcing a retype
+            address = QSettings("LocalShare", "LocalShare").value("update_source", "")
+        if not address:
             QMessageBox.information(
                 self,
                 "Enter an address",
@@ -894,6 +953,7 @@ class MainWindow(QMainWindow):
             return
 
         QSettings("LocalShare", "LocalShare").setValue("update_source", address)
+        self._last_checked_address = address
 
         self.check_update_btn.setEnabled(False)
         self.check_update_btn.setText("Checking…")
@@ -902,38 +962,42 @@ class MainWindow(QMainWindow):
         self._update_worker.finished.connect(self._on_update_check_finished)
         self._update_worker.start()
 
-    def _on_update_check_finished(self, result) -> None:
+    def _on_update_check_finished(self, result, build_result) -> None:
         self.check_update_btn.setEnabled(True)
         self.check_update_btn.setText("Check for Updates")
+
+        # Clear the field and refresh the placeholder hint — ready to
+        # type a different address next time without deleting anything
+        # first, while the just-used address is remembered for both the
+        # placeholder hint and the startup auto-check.
+        saved = QSettings("LocalShare", "LocalShare").value("update_source", "")
+        self.update_source_input.clear()
+        self.update_source_input.setPlaceholderText(
+            f"e.g. 192.168.1.104:8765 (last used: {saved})"
+            if saved
+            else "Update source address (e.g. 192.168.1.104:8765)"
+        )
 
         if not result.ok:
             QMessageBox.warning(self, "Couldn't check for updates", result.error)
             return
 
-        if result.is_newer:
+        if not result.is_newer:
             QMessageBox.information(
-                self,
-                "Update available",
-                f"A newer version is available: v{result.remote_version} "
-                f"(you have v{APP_VERSION}).\n\n"
-                f"Open that address in your browser and download the latest "
-                f"LocalShare.exe from the shared files, then replace this one.",
+                self, "Up to date", f"You're running the latest version (v{APP_VERSION})."
             )
-        else:
-            QMessageBox.information(
-                self,
-                "Up to date",
-                f"You're running the latest version (v{APP_VERSION}).",
-            )
+            return
+
+        self._offer_update_install(result, build_result)
 
     def _auto_check_for_updates_on_startup(self) -> None:
         """
         Runs a background check against the last-used update source
         (if any) shortly after launch, with no manual address entry
         needed. Unlike the manual "Check for Updates" button, this
-        stays silent unless there's actually something to report —
-        an "up to date" popup on every single launch would just be
-        noise. Controlled by a checkbox so it's opt-out, not forced.
+        stays silent unless there's actually something to report — an
+        "up to date" popup on every single launch would just be noise.
+        Controlled by a checkbox so it's opt-out, not forced.
         """
         settings = QSettings("LocalShare", "LocalShare")
         if not settings.value("auto_check_updates", True, type=bool):
@@ -942,22 +1006,90 @@ class MainWindow(QMainWindow):
         if not address:
             return  # nothing saved yet — nothing to auto-check against
 
+        self._last_checked_address = address
         self._auto_update_worker = _UpdateCheckWorker(address)
         self._auto_update_worker.finished.connect(self._on_auto_update_check_finished)
         self._auto_update_worker.start()
 
-    def _on_auto_update_check_finished(self, result) -> None:
+    def _on_auto_update_check_finished(self, result, build_result) -> None:
         if not result.ok or not result.is_newer:
             return  # silent on error or already up to date — see docstring above
+        self._offer_update_install(result, build_result)
+
+    def _offer_update_install(self, result, build_result) -> None:
+        """
+        Shared by both the manual and automatic update paths: if the
+        other instance is sharing something that looks like an
+        installer, offer to download and launch it right now. If not,
+        fall back to just pointing at the address, same as before.
+        """
+        if build_result is not None and build_result.available:
+            reply = QMessageBox.question(
+                self,
+                "Update available",
+                f"A newer version is available: v{result.remote_version} "
+                f"(you have v{APP_VERSION}).\n\n"
+                f"Found: {build_result.name}\n\n"
+                f"Download and install it now? LocalShare will close so the "
+                f"installer can run cleanly.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._start_update_download(build_result)
+        else:
+            QMessageBox.information(
+                self,
+                "Update available",
+                f"A newer version is available: v{result.remote_version} "
+                f"(you have v{APP_VERSION}).\n\n"
+                f"Open {self._last_checked_address} in your browser and download "
+                f"the latest LocalShare installer from the shared files, then run it.",
+            )
+
+    def _start_update_download(self, build_result) -> None:
+        self.check_update_btn.setEnabled(False)
+        self.check_update_btn.setText("Downloading update…")
+
+        self._update_download_worker = _UpdateDownloadWorker(
+            self._last_checked_address, build_result.download_url, build_result.name
+        )
+        self._update_download_worker.finished_ok.connect(self._on_update_downloaded)
+        self._update_download_worker.finished_error.connect(self._on_update_download_failed)
+        self._update_download_worker.start()
+
+    def _on_update_download_failed(self, error: str) -> None:
+        self.check_update_btn.setEnabled(True)
+        self.check_update_btn.setText("Check for Updates")
+        QMessageBox.warning(self, "Download failed", error)
+
+    def _on_update_downloaded(self, local_path: str) -> None:
+        self.check_update_btn.setEnabled(True)
+        self.check_update_btn.setText("Check for Updates")
+
+        # I couldn't test this exact hand-off (launching a downloaded
+        # installer and then closing this app) end-to-end without a
+        # real Windows/Linux machine — if the installer doesn't open
+        # automatically, the file is still safely on disk at the path
+        # shown below.
+        try:
+            open_with_default_app(local_path)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Downloaded, but couldn't launch it",
+                f"The update downloaded successfully to:\n{local_path}\n\n"
+                f"But it couldn't be opened automatically ({exc}). "
+                f"Open that file yourself to install it.",
+            )
+            return
+
         QMessageBox.information(
             self,
-            "Update available",
-            f"A newer version is available: v{result.remote_version} "
-            f"(you have v{APP_VERSION}).\n\n"
-            f"Open {self.update_source_input.text().strip()} in your browser and "
-            f"download the latest LocalShare.exe from the shared files, then "
-            f"replace this one.",
+            "Installing…",
+            "The installer should now be opening. LocalShare will close so it "
+            "can update cleanly — reopen it once installation finishes.",
         )
+        QApplication.instance().quit()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:
