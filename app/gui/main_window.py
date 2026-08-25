@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QColorDialog,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -182,25 +183,31 @@ class MainWindow(QMainWindow):
 
         title_row.addStretch()
 
+        self.settings_btn = HoverGlowButton("⚙️ Settings", glow_color=self.theme_colors["accent"])
+        self.settings_btn.setToolTip("Theme, accent color, and background options")
+        self.settings_btn.clicked.connect(self._open_settings_dialog)
+        title_row.addWidget(self.settings_btn)
+
+        root.addLayout(title_row)
+
+        # These live inside the Settings dialog (built below), not the
+        # main window layout — created here so they're available for
+        # theme-refresh/glow-color updates the same way as before.
         self.accent_color_btn = HoverGlowButton("🎨", glow_color=self.theme_colors["accent"])
         self.accent_color_btn.setToolTip("Choose a custom accent color")
-        self.accent_color_btn.setFixedWidth(36)
         self.accent_color_btn.clicked.connect(self._choose_accent_color)
-        title_row.addWidget(self.accent_color_btn)
 
         self.theme_toggle_btn = HoverGlowButton("☀️ Light", glow_color=self.theme_colors["accent"])
         self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
         self.theme_toggle_btn.clicked.connect(self._toggle_theme)
-        title_row.addWidget(self.theme_toggle_btn)
-
-        root.addLayout(title_row)
 
         self.gradient_bg_checkbox = QCheckBox("🌈 Animated gradient background")
         self.gradient_bg_checkbox.setToolTip(
             "A slowly shifting gradient behind the window content, instead of a flat color."
         )
         self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
-        root.addWidget(self.gradient_bg_checkbox)
+
+        self._build_settings_dialog()
 
         # Drop zone
         self.drop_zone = DropZone()
@@ -790,6 +797,8 @@ class MainWindow(QMainWindow):
         self.save_qr_btn.set_glow_color(colors["accent"])
         self.copy_address_btn.set_glow_color(colors["accent"])
         self.check_update_btn.set_glow_color(colors["accent"])
+        self.settings_btn.set_glow_color(colors["accent"])
+        self._settings_close_btn.set_glow_color(colors["accent"])
 
         # status dot color depends on server state, not just theme
         if self.server_handle.is_running:
@@ -808,6 +817,48 @@ class MainWindow(QMainWindow):
             return  # user cancelled
         self._custom_accent = color.name()
         self._apply_theme()
+
+    def _build_settings_dialog(self) -> None:
+        """
+        Builds the Settings dialog once at startup. The controls inside
+        it (theme toggle, accent color, gradient background) are the
+        same widget instances created just before this call — moving
+        them here just changes where they're displayed, not their
+        behavior or state.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Settings")
+        dialog.setMinimumWidth(320)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+
+        appearance_label = QLabel("APPEARANCE")
+        appearance_label.setObjectName("SectionLabel")
+        layout.addWidget(appearance_label)
+
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Theme"))
+        theme_row.addStretch()
+        theme_row.addWidget(self.theme_toggle_btn)
+        layout.addLayout(theme_row)
+
+        accent_row = QHBoxLayout()
+        accent_row.addWidget(QLabel("Accent color"))
+        accent_row.addStretch()
+        accent_row.addWidget(self.accent_color_btn)
+        layout.addLayout(accent_row)
+
+        layout.addWidget(self.gradient_bg_checkbox)
+
+        close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        self.settings_dialog = dialog
+        self._settings_close_btn = close_btn  # kept for theme/glow-color refresh
+
+    def _open_settings_dialog(self) -> None:
+        self.settings_dialog.exec()
 
     def _check_for_updates(self) -> None:
         address = self.update_source_input.text().strip()

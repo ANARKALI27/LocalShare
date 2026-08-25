@@ -33,3 +33,4 @@ def app_root() -> str:
 
 WEB_DIR = os.path.join(app_root(), "web")
 ICON_PATH = os.path.join(app_root(), "assets", "localshare.png")
+CHECKMARK_ICON_PATH = os.path.join(app_root(), "assets", "checkmark.png")

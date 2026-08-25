@@ -6,6 +6,12 @@ other palette, not maintaining two separate stylesheet strings by hand.
 """
 from __future__ import annotations
 
+from app.paths import CHECKMARK_ICON_PATH
+
+# QSS url() wants forward slashes regardless of platform — Windows
+# backslash paths aren't parsed correctly inside a stylesheet string.
+_CHECKMARK_URL = CHECKMARK_ICON_PATH.replace("\\", "/")
+
 DARK = {
     "bg": "#1E1F26",
     "surface": "#262832",
@@ -41,10 +47,18 @@ LIGHT = {
 
 def build_stylesheet(c: dict) -> str:
     return f"""
-QMainWindow, QWidget {{
+QMainWindow {{
     background-color: {c['bg']};
+}}
+QDialog {{
+    background-color: {c['bg']};
+}}
+QWidget {{
     color: {c['text']};
     font-family: "Segoe UI", sans-serif;
+}}
+QLabel, QCheckBox, QRadioButton {{
+    background: transparent;
 }}
 QLabel#Title {{
     font-size: 20px;
@@ -100,23 +114,15 @@ QRadioButton::indicator, QCheckBox::indicator {{
     height: 16px;
     border: 2px solid {c['border']};
     background-color: {c['surface']};
-}}
-QRadioButton::indicator {{
-    border-radius: 9px;
-}}
-QCheckBox::indicator {{
     border-radius: 4px;
 }}
 QRadioButton::indicator:hover, QCheckBox::indicator:hover {{
     border-color: {c['accent']};
 }}
-QRadioButton::indicator:checked {{
+QRadioButton::indicator:checked, QCheckBox::indicator:checked {{
     border-color: {c['accent']};
     background-color: {c['accent']};
-}}
-QCheckBox::indicator:checked {{
-    border-color: {c['accent']};
-    background-color: {c['accent']};
+    image: url({_CHECKMARK_URL});
 }}
 QRadioButton:checked, QCheckBox:checked {{
     color: {c['accent']};

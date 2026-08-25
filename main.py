@@ -3,7 +3,21 @@ LocalShare — LAN file sharing app.
 
 Run with: python main.py
 """
+import os
 import sys
+
+# In a windowed/no-console PyInstaller build, sys.stdout and
+# sys.stderr are None (there's no console to write to). Any library
+# that tries to write progress/log output to them — this bit us with
+# uvicorn's default logging, and again with pyngrok downloading the
+# ngrok binary ("'NoneType' object has no attribute 'write'") — will
+# crash. Redirecting to a no-op sink here, before anything else
+# imports, fixes this class of bug generally rather than patching each
+# library that happens to hit it one at a time.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
