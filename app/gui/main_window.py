@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import platform
 
-from PySide6.QtCore import Qt, QSettings, QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QSettings, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -146,8 +146,13 @@ class MainWindow(QMainWindow):
         self._stop_worker: _ServerStopWorker | None = None
         self._tunnel_worker: _TunnelStartWorker | None = None
         self._local_address: str | None = None
+        self._auto_update_worker: _UpdateCheckWorker | None = None
 
         self._build_ui()
+
+        # Slight delay so this doesn't compete with the splash screen /
+        # initial window rendering — a background check, not a blocker.
+        QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
@@ -394,6 +399,23 @@ class MainWindow(QMainWindow):
         self.check_update_btn.clicked.connect(self._check_for_updates)
         update_row.addWidget(self.check_update_btn)
         root.addLayout(update_row)
+
+        self.auto_check_updates_checkbox = QCheckBox("Automatically check for updates on startup")
+        self.auto_check_updates_checkbox.setToolTip(
+            "Silently checks the address above shortly after launch — only speaks up "
+            "if a newer version is actually found. Doesn't require re-entering the "
+            "address each time; it's remembered from your last manual check."
+        )
+        auto_check_default = QSettings("LocalShare", "LocalShare").value(
+            "auto_check_updates", True, type=bool
+        )
+        self.auto_check_updates_checkbox.setChecked(auto_check_default)
+        self.auto_check_updates_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue(
+                "auto_check_updates", checked
+            )
+        )
+        root.addWidget(self.auto_check_updates_checkbox)
 
         self.credit_label = QLabel("Developed by ANARKALI")
         self.credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -903,6 +925,39 @@ class MainWindow(QMainWindow):
                 "Up to date",
                 f"You're running the latest version (v{APP_VERSION}).",
             )
+
+    def _auto_check_for_updates_on_startup(self) -> None:
+        """
+        Runs a background check against the last-used update source
+        (if any) shortly after launch, with no manual address entry
+        needed. Unlike the manual "Check for Updates" button, this
+        stays silent unless there's actually something to report —
+        an "up to date" popup on every single launch would just be
+        noise. Controlled by a checkbox so it's opt-out, not forced.
+        """
+        settings = QSettings("LocalShare", "LocalShare")
+        if not settings.value("auto_check_updates", True, type=bool):
+            return
+        address = settings.value("update_source", "")
+        if not address:
+            return  # nothing saved yet — nothing to auto-check against
+
+        self._auto_update_worker = _UpdateCheckWorker(address)
+        self._auto_update_worker.finished.connect(self._on_auto_update_check_finished)
+        self._auto_update_worker.start()
+
+    def _on_auto_update_check_finished(self, result) -> None:
+        if not result.ok or not result.is_newer:
+            return  # silent on error or already up to date — see docstring above
+        QMessageBox.information(
+            self,
+            "Update available",
+            f"A newer version is available: v{result.remote_version} "
+            f"(you have v{APP_VERSION}).\n\n"
+            f"Open {self.update_source_input.text().strip()} in your browser and "
+            f"download the latest LocalShare.exe from the shared files, then "
+            f"replace this one.",
+        )
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:

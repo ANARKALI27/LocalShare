@@ -48,6 +48,19 @@ class TunnelHandle:
                 "https://dashboard.ngrok.com/get-started/your-authtoken and paste it in."
             )
 
+        # A common mistake: copying the sample line from ngrok's config
+        # example ("authtoken: <your-authtoken>") instead of clicking
+        # "Show Authtoken" to reveal the real value first. Catch this
+        # instantly rather than waiting on a round-trip to ngrok's
+        # servers just to get the same answer back.
+        stripped = authtoken.strip()
+        if "<" in stripped or ">" in stripped or stripped.lower() == "your-authtoken":
+            raise RuntimeError(
+                "That looks like the placeholder text from ngrok's example config, not "
+                "your actual token. On the ngrok dashboard, click \"Show Authtoken\" first "
+                "to reveal the real value, then copy that (not the example line above it)."
+            )
+
         try:
             from pyngrok import ngrok
         except ImportError as exc:
