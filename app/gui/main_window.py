@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.drop_zone import DropZone
+from app.gui.gradient_background import AnimatedGradientBackground
+from app.gui.hover_button import HoverGlowButton
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import DARK, LIGHT, build_stylesheet
 from app.paths import ICON_PATH
@@ -158,7 +160,9 @@ class MainWindow(QMainWindow):
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.setCentralWidget(scroll_area)
 
-        central = QWidget()
+        central = AnimatedGradientBackground()
+        central.set_colors(self.theme_colors["bg"], self.theme_colors["accent"])
+        self.gradient_background = central
         scroll_area.setWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(20, 20, 20, 20)
@@ -178,18 +182,25 @@ class MainWindow(QMainWindow):
 
         title_row.addStretch()
 
-        self.accent_color_btn = QPushButton("🎨")
+        self.accent_color_btn = HoverGlowButton("🎨", glow_color=self.theme_colors["accent"])
         self.accent_color_btn.setToolTip("Choose a custom accent color")
         self.accent_color_btn.setFixedWidth(36)
         self.accent_color_btn.clicked.connect(self._choose_accent_color)
         title_row.addWidget(self.accent_color_btn)
 
-        self.theme_toggle_btn = QPushButton("☀️ Light")
+        self.theme_toggle_btn = HoverGlowButton("☀️ Light", glow_color=self.theme_colors["accent"])
         self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
         self.theme_toggle_btn.clicked.connect(self._toggle_theme)
         title_row.addWidget(self.theme_toggle_btn)
 
         root.addLayout(title_row)
+
+        self.gradient_bg_checkbox = QCheckBox("🌈 Animated gradient background")
+        self.gradient_bg_checkbox.setToolTip(
+            "A slowly shifting gradient behind the window content, instead of a flat color."
+        )
+        self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
+        root.addWidget(self.gradient_bg_checkbox)
 
         # Drop zone
         self.drop_zone = DropZone()
@@ -307,16 +318,15 @@ class MainWindow(QMainWindow):
         self.pin_display_label.hide()
         root.addWidget(self.pin_display_label)
 
-        self.webdav_checkbox = QCheckBox("Also enable WebDAV (Explorer-mappable, experimental)")
+        self.webdav_checkbox = QCheckBox("Also enable Network Drive access")
         self.webdav_checkbox.setToolTip(
-            "Lets Windows Explorer map this share as a network drive via\n"
-            "'Map Network Drive' -> 'Connect to a website'.\n\n"
-            "Requires running LocalShare as Administrator: Windows' WebDAV\n"
-            "client is unreliable on non-standard ports, so this uses port 80.\n\n"
-            "Other limitations: shared FOLDERS\n"
-            "only (not individually-shared files), and Explorer's WebDAV client\n"
-            "can be slow or unreliable for very large transfers.\n"
-            "For big files, use the browser address instead."
+            "Lets Windows Explorer or your file manager show this share as a\n"
+            "mapped network drive, instead of only working through a browser.\n\n"
+            "On Windows, this requires running LocalShare as Administrator\n"
+            "(a technical limitation of Windows itself, not this app).\n\n"
+            "Other limits: only shared FOLDERS show up this way (not\n"
+            "individually-shared files), and it can be slow or unreliable for\n"
+            "very large transfers. For big files, use the browser address instead."
         )
         root.addWidget(self.webdav_checkbox)
 
@@ -340,7 +350,7 @@ class MainWindow(QMainWindow):
         self.qr_caption_label.hide()
         root.addWidget(self.qr_caption_label)
 
-        self.save_qr_btn = QPushButton("Save QR Code…")
+        self.save_qr_btn = HoverGlowButton("Save QR Code…", glow_color=self.theme_colors["accent"])
         self.save_qr_btn.clicked.connect(self._save_qr_code)
         self.save_qr_btn.hide()
         root.addWidget(self.save_qr_btn, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -349,11 +359,11 @@ class MainWindow(QMainWindow):
 
         # Action buttons
         action_row = QHBoxLayout()
-        self.copy_address_btn = QPushButton("Copy Address")
+        self.copy_address_btn = HoverGlowButton("Copy Address", glow_color=self.theme_colors["accent"])
         self.copy_address_btn.setEnabled(False)  # enabled once server is running (Phase 3)
         self.copy_address_btn.clicked.connect(self._copy_address)
 
-        self.toggle_server_btn = QPushButton("Start Sharing")
+        self.toggle_server_btn = HoverGlowButton("Start Sharing", glow_color=self.theme_colors["accent"])
         self.toggle_server_btn.setObjectName("PrimaryButton")
         self.toggle_server_btn.clicked.connect(self._on_toggle_server_clicked)
 
@@ -373,7 +383,7 @@ class MainWindow(QMainWindow):
             self.update_source_input.setText(saved_source)
         update_row.addWidget(self.update_source_input, stretch=1)
 
-        self.check_update_btn = QPushButton("Check for Updates")
+        self.check_update_btn = HoverGlowButton("Check for Updates", glow_color=self.theme_colors["accent"])
         self.check_update_btn.clicked.connect(self._check_for_updates)
         update_row.addWidget(self.check_update_btn)
         root.addLayout(update_row)
@@ -518,7 +528,6 @@ class MainWindow(QMainWindow):
         self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
         self.status_label.setText("Server: Running")
         self._local_address = address
-        self.address_label.setText(f"Address: {self._build_share_url(address)}")
         self.copy_address_btn.setEnabled(True)
         self.toggle_server_btn.setText("Stop Sharing")
         self.toggle_server_btn.setEnabled(True)
@@ -531,17 +540,25 @@ class MainWindow(QMainWindow):
         self.custom_pin_input.setEnabled(False)
         self.ngrok_token_input.setEnabled(False)
 
-        self._show_qr_code(self._build_share_url(address))
+        if self.internet_radio.isChecked():
+            # Don't show the LAN address/QR yet — it will NOT work for
+            # someone outside this network, and showing it now (even
+            # briefly) would be actively misleading. Wait for the
+            # tunnel to actually connect before showing anything.
+            self.address_label.setText("Address: connecting to internet tunnel…")
+            self._hide_qr_code()
+            self._start_tunnel()
+        else:
+            self.address_label.setText(f"Address: {self._build_share_url(address)}")
+            self._show_qr_code(self._build_share_url(address))
 
         if self.webdav_checkbox.isChecked():
             self._start_webdav()
 
-        if self.internet_radio.isChecked():
-            self._start_tunnel()
-
     def _start_tunnel(self) -> None:
         port = self.server_handle.port
         authtoken = self.ngrok_token_input.text().strip()
+        self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self.tunnel_status_label.setText("Starting internet tunnel…")
         self.tunnel_status_label.show()
 
@@ -552,6 +569,7 @@ class MainWindow(QMainWindow):
 
     def _on_tunnel_started(self, public_url: str) -> None:
         share_url = self._build_share_url(public_url)
+        self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self.tunnel_status_label.setText(
             f"Internet address: {share_url}\n"
             f"(First-time visitors may see a one-time ngrok warning page — that's normal.)"
@@ -560,7 +578,24 @@ class MainWindow(QMainWindow):
         self._show_qr_code(share_url)
 
     def _on_tunnel_failed(self, error: str) -> None:
-        self.tunnel_status_label.setText(f"Internet tunnel not started: {error}")
+        self.tunnel_status_label.setStyleSheet(
+            f"color: {self.theme_colors['danger']}; font-size: 12px; font-weight: 600;"
+        )
+        self.tunnel_status_label.setText(
+            f"⚠ Internet sharing failed: {error}\n"
+            f"Your share is NOT reachable from outside your network right now."
+        )
+        self.tunnel_status_label.show()
+        self.address_label.setText("Address: internet tunnel failed — see message below")
+        self._hide_qr_code()
+        QMessageBox.warning(
+            self,
+            "Internet sharing failed",
+            f"Couldn't start internet sharing:\n\n{error}\n\n"
+            f"Your files are only reachable on your local network right now, "
+            f"not from the internet. Fix the issue above, then click Stop "
+            f"Sharing and Start Sharing again to retry.",
+        )
 
     def _on_mode_changed(self, internet_checked: bool) -> None:
         self.ngrok_token_input.setVisible(internet_checked)
@@ -629,13 +664,13 @@ class MainWindow(QMainWindow):
         try:
             self.webdav_handle.start()
         except RuntimeError as exc:
-            self.webdav_status_label.setText(f"WebDAV not started: {exc}")
+            self.webdav_status_label.setText(f"Network Drive access not started: {exc}")
             self.webdav_status_label.show()
             return
         if platform.system() == "Windows":
-            instructions = "WebDAV: paste this into Explorer's 'Map Network Drive' dialog:"
+            instructions = "Network Drive: paste this into Explorer's 'Map Network Drive' dialog:"
         else:
-            instructions = "WebDAV: use this address in your file manager's 'Connect to Server':"
+            instructions = "Network Drive: use this address in your file manager's 'Connect to Server':"
         self.webdav_status_label.setText(f"{instructions}\n{self.webdav_handle.explorer_path}")
         self.webdav_status_label.show()
 
@@ -748,6 +783,13 @@ class MainWindow(QMainWindow):
             f"color: {colors['accent']}; font-size: 12px; font-weight: 600;"
         )
         self.pin_mandatory_label.setStyleSheet(f"color: {colors['text_dim']}; font-size: 13px;")
+        self.gradient_background.set_colors(colors["bg"], colors["accent"])
+        self.accent_color_btn.set_glow_color(colors["accent"])
+        self.theme_toggle_btn.set_glow_color(colors["accent"])
+        self.toggle_server_btn.set_glow_color(colors["accent"])
+        self.save_qr_btn.set_glow_color(colors["accent"])
+        self.copy_address_btn.set_glow_color(colors["accent"])
+        self.check_update_btn.set_glow_color(colors["accent"])
 
         # status dot color depends on server state, not just theme
         if self.server_handle.is_running:

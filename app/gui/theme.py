@@ -113,10 +113,6 @@ QRadioButton::indicator:hover, QCheckBox::indicator:hover {{
 QRadioButton::indicator:checked {{
     border-color: {c['accent']};
     background-color: {c['accent']};
-    /* inset ring effect: a lighter dot inside the filled circle */
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
-                                 stop:0 {c['surface']}, stop:0.45 {c['surface']},
-                                 stop:0.55 {c['accent']}, stop:1 {c['accent']});
 }}
 QCheckBox::indicator:checked {{
     border-color: {c['accent']};
@@ -132,5 +128,47 @@ QScrollArea {{
 }}
 QScrollArea > QWidget > QWidget {{
     background-color: {c['bg']};
+}}
+QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical {{
+    background: {c['border']};
+    border-radius: 5px;
+    min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {c['accent']};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+    border: none;
+    background: none;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
+}}
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {c['border']};
+    border-radius: 5px;
+    min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {c['accent']};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+    border: none;
+    background: none;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
 }}
 """

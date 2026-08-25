@@ -77,7 +77,7 @@ type `localshare` in a terminal.
   yourself if you want it; anyone who reaches your address without it can
   browse, download, upload, and message freely. It's automatically forced
   on in Internet mode.
-- **The Explorer/file-manager integration (WebDAV)** is a bonus feature for
+- **The "Network Drive access" feature** is a bonus for people who want
   people who want their file manager to show the share like a regular folder.
   It's labeled "experimental" for a reason — it can be finicky depending on
   your system, and it never supports a PIN even if one is set elsewhere.
