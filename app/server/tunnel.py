@@ -31,6 +31,7 @@ cloudflared's documented log format, not direct observation.
 """
 from __future__ import annotations
 
+import os
 import platform
 import re
 import shutil
@@ -62,6 +63,39 @@ _INSTALL_INSTRUCTIONS = {
 }
 
 
+def _find_cloudflared() -> str | None:
+    """
+    Looks for cloudflared on PATH first, then falls back to checking
+    known install locations directly. This matters because a package
+    manager (winget, apt, etc.) updates PATH for new processes, but an
+    already-running app — or one launched from a desktop session that
+    hasn't refreshed its environment — won't see that update until
+    it's restarted. Checking the actual install location directly
+    catches "just installed, but this process hasn't refreshed yet."
+    """
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+
+    candidates: list[str] = []
+    if platform.system() == "Windows":
+        # winget's "Links" folder is a stable, version-independent
+        # location it maintains specifically so other tools can find
+        # what it installs without needing PATH to be refreshed.
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            candidates.append(
+                os.path.join(localappdata, "Microsoft", "WinGet", "Links", "cloudflared.exe")
+            )
+    else:
+        candidates.extend(["/usr/local/bin/cloudflared", "/usr/bin/cloudflared"])
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 class TunnelHandle:
     def __init__(self) -> None:
         self.public_url: str | None = None
@@ -82,7 +116,7 @@ class TunnelHandle:
         if self.is_running:
             return self.public_url  # type: ignore[return-value]
 
-        cloudflared_path = shutil.which("cloudflared")
+        cloudflared_path = _find_cloudflared()
         if not cloudflared_path:
             raise RuntimeError(
                 _INSTALL_INSTRUCTIONS.get(
@@ -90,6 +124,9 @@ class TunnelHandle:
                     "cloudflared isn't installed. Get it (free, no account needed) from:\n"
                     "https://github.com/cloudflare/cloudflared/releases/latest",
                 )
+                + "\n\nAlready installed it? Fully close and reopen LocalShare — a "
+                "just-installed program sometimes isn't visible to an app that was "
+                "already running before the install finished."
             )
 
         try:
