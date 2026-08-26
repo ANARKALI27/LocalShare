@@ -163,10 +163,13 @@ class MainWindow(QMainWindow):
         self.resize(520, 720)
         self.setMinimumSize(380, 420)  # small enough to shrink comfortably, never unusably tiny
 
-        self._current_theme_name = "Default Dark"
-        self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
+        _persisted = QSettings("LocalShare", "LocalShare")
+        self._current_theme_name = _persisted.value("theme_name", "Default Dark")
+        if self._current_theme_name not in THEMES:
+            self._current_theme_name = "Default Dark"  # guards against a stale/invalid saved name
+        self._custom_accent = _persisted.value("custom_accent", None) or None  # QSettings can return "" instead of None
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
-        self.theme_colors = self._current_base_colors()
+        self.theme_colors = self._compute_theme_colors()
         # Applied at the QApplication level, not just this window — a
         # per-widget stylesheet doesn't reliably cascade to separate
         # top-level windows (QDialog, QMessageBox), which was leaving
@@ -279,17 +282,37 @@ class MainWindow(QMainWindow):
             swatch.clicked.connect(lambda checked=False, hex_color=preset_hex: self._choose_accent_preset(hex_color))
             self.accent_preset_buttons.append(swatch)
 
+        _gradient_settings = QSettings("LocalShare", "LocalShare")
+        _persisted_gradient_style = _gradient_settings.value("gradient_style", STYLES[0] if STYLES else "Sweep")
+        _persisted_gradient_enabled = _gradient_settings.value("gradient_enabled", False, type=bool)
+
         self.gradient_style_combo = QComboBox()
         self.gradient_style_combo.addItems(STYLES)
-        self.gradient_style_combo.setEnabled(False)  # matches checkbox starting unchecked
+        if _persisted_gradient_style in STYLES:
+            self.gradient_style_combo.setCurrentText(_persisted_gradient_style)
+        self.gradient_style_combo.setEnabled(_persisted_gradient_enabled)
         self.gradient_style_combo.currentTextChanged.connect(self.gradient_background.set_style)
+        self.gradient_style_combo.currentTextChanged.connect(
+            lambda style: QSettings("LocalShare", "LocalShare").setValue("gradient_style", style)
+        )
 
         self.gradient_bg_checkbox = QCheckBox("🌈 Animated gradient background")
         self.gradient_bg_checkbox.setToolTip(
             "A slowly shifting gradient behind the window content, instead of a flat color."
         )
+        self.gradient_bg_checkbox.setChecked(_persisted_gradient_enabled)
         self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
         self.gradient_bg_checkbox.toggled.connect(self.gradient_style_combo.setEnabled)
+        self.gradient_bg_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue("gradient_enabled", checked)
+        )
+
+        # Apply the restored values to the actual background widget
+        # explicitly — setCurrentText()/setChecked() above ran before
+        # these signal connections existed, so relying on the signals
+        # alone wouldn't reflect a restored "on" state at startup.
+        self.gradient_background.set_style(self.gradient_style_combo.currentText())
+        self.gradient_background.set_animated(_persisted_gradient_enabled)
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -941,9 +964,12 @@ class MainWindow(QMainWindow):
     def _is_current_theme_dark(self) -> bool:
         """Whether the active theme's background is dark or light — used
         to pick a lighten-vs-darken direction for a custom accent's hover
-        state. QColor.lightness() (HSL, 0-255) is a simple, good-enough
-        signal for this; doesn't need to be colorimetrically precise."""
-        return QColor(self.theme_colors["bg"]).lightness() < 128
+        state. Derived from the theme's own base bg (not self.theme_colors,
+        which may not exist yet the first time this runs, e.g. restoring
+        a saved custom accent during __init__ before the rest of the
+        window is built) — a custom accent never changes 'bg' anyway, so
+        this is exactly equivalent once the window is fully up."""
+        return QColor(self._current_base_colors()["bg"]).lightness() < 128
 
     def _compute_hover_color(self, hex_color: str) -> str:
         """
@@ -956,15 +982,21 @@ class MainWindow(QMainWindow):
         adjusted = color.lighter(115) if self._is_current_theme_dark() else color.darker(115)
         return adjusted.name()
 
-    def _apply_theme(self) -> None:
-        """Rebuilds theme_colors from the current base + any custom accent
-        override, then pushes it out to every widget that needs it."""
+    def _compute_theme_colors(self) -> dict:
+        """The current theme's palette with any custom accent override
+        applied — shared by both the initial __init__ setup and
+        _apply_theme(), so there's exactly one place that logic lives."""
         colors = self._current_base_colors()
         if self._custom_accent:
             colors["accent"] = self._custom_accent
-        self.theme_colors = colors  # set before _compute_hover_color(), which reads theme_colors["bg"]
-        if self._custom_accent:
             colors["accent_hover"] = self._compute_hover_color(self._custom_accent)
+        return colors
+
+    def _apply_theme(self) -> None:
+        """Rebuilds theme_colors from the current base + any custom accent
+        override, then pushes it out to every widget that needs it."""
+        colors = self._compute_theme_colors()
+        self.theme_colors = colors
 
         QApplication.instance().setStyleSheet(build_stylesheet(colors))
         self.drop_zone.set_theme(colors)
@@ -1013,10 +1045,14 @@ class MainWindow(QMainWindow):
         # around and clash with the newly chosen palette.
         self._custom_accent = None
         self._apply_theme()
+        settings = QSettings("LocalShare", "LocalShare")
+        settings.setValue("theme_name", theme_name)
+        settings.setValue("custom_accent", "")  # cleared, per the reset above — persist that too
 
     def _choose_accent_preset(self, hex_color: str) -> None:
         self._custom_accent = hex_color
         self._apply_theme()
+        QSettings("LocalShare", "LocalShare").setValue("custom_accent", hex_color)
 
     def _choose_accent_color(self) -> None:
         initial = QColor(self.theme_colors["accent"])
@@ -1025,6 +1061,7 @@ class MainWindow(QMainWindow):
             return  # user cancelled
         self._custom_accent = color.name()
         self._apply_theme()
+        QSettings("LocalShare", "LocalShare").setValue("custom_accent", color.name())
 
     def _build_settings_dialog(self) -> None:
         """
