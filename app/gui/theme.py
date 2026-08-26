@@ -6,6 +6,8 @@ other palette, not maintaining two separate stylesheet strings by hand.
 """
 from __future__ import annotations
 
+import json
+
 from app.paths import CHECKMARK_ICON_PATH
 
 # QSS url() wants forward slashes regardless of platform — Windows
@@ -146,6 +148,123 @@ ACCENT_PRESETS: dict[str, str] = {
     "Pink": "#EC4899",
     "Red": "#EF4444",
 }
+
+# -- Custom theme builder: core colors, derived palette, JSON export/import -----
+
+# The colors someone actually picks in the Custom Theme dialog — kept
+# small and non-redundant. Everything else in the full 13-key palette
+# (accent_hover, success_bg, hover_bg, etc.) is a computed variant of
+# one of these, not something worth asking a person to hand-pick.
+CORE_KEYS = ["bg", "surface", "border", "text", "text_dim", "accent", "success", "danger"]
+
+# The full set of keys build_stylesheet() actually consumes — used to
+# validate an imported theme file has everything required.
+FULL_KEYS = [
+    "bg", "surface", "border", "text", "text_dim", "accent", "accent_hover",
+    "success", "success_bg", "success_border", "danger", "hover_bg", "selected_bg",
+]
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        raise ValueError(f"Not a valid hex color: {hex_color!r}")
+    return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    clamped = [max(0, min(255, int(c))) for c in rgb]
+    return "#{:02X}{:02X}{:02X}".format(*clamped)
+
+
+def _lighten(hex_color: str, factor: float) -> str:
+    """Blends toward white by `factor` (0..1)."""
+    r, g, b = _hex_to_rgb(hex_color)
+    return _rgb_to_hex((r + (255 - r) * factor, g + (255 - g) * factor, b + (255 - b) * factor))
+
+
+def _darken(hex_color: str, factor: float) -> str:
+    """Blends toward black by `factor` (0..1)."""
+    r, g, b = _hex_to_rgb(hex_color)
+    return _rgb_to_hex((r * (1 - factor), g * (1 - factor), b * (1 - factor)))
+
+
+def _perceived_brightness(hex_color: str) -> float:
+    """0 (black) to 1 (white) — standard perceived-brightness weighting."""
+    r, g, b = _hex_to_rgb(hex_color)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+
+def _hex_to_rgba_string(hex_color: str, alpha: float) -> str:
+    r, g, b = _hex_to_rgb(hex_color)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def derive_full_palette(core: dict) -> dict:
+    """
+    Expands a minimal CORE_KEYS palette (the colors someone actually
+    picks in the Custom Theme dialog) into the full palette
+    build_stylesheet() expects, computing sensible derived values
+    (hover states, tinted backgrounds) rather than asking someone to
+    hand-pick 13 near-duplicate colors.
+    """
+    is_dark = _perceived_brightness(core["bg"]) < 0.5
+
+    accent_hover = _lighten(core["accent"], 0.18) if is_dark else _darken(core["accent"], 0.18)
+    hover_bg = _lighten(core["surface"], 0.10) if is_dark else _darken(core["surface"], 0.06)
+
+    return {
+        "bg": core["bg"],
+        "surface": core["surface"],
+        "border": core["border"],
+        "text": core["text"],
+        "text_dim": core["text_dim"],
+        "accent": core["accent"],
+        "accent_hover": accent_hover,
+        "success": core["success"],
+        "success_bg": _hex_to_rgba_string(core["success"], 0.12),
+        "success_border": core["success"],
+        "danger": core["danger"],
+        "hover_bg": hover_bg,
+        "selected_bg": _hex_to_rgba_string(core["accent"], 0.18),
+    }
+
+
+def theme_to_json(name: str, colors: dict) -> str:
+    """Serializes a theme to the small JSON format used for export/import."""
+    payload = {
+        "app": "LocalShare",
+        "name": name,
+        "colors": {k: colors[k] for k in FULL_KEYS if k in colors},
+    }
+    return json.dumps(payload, indent=2)
+
+
+def theme_from_json(json_text: str) -> tuple[str, dict]:
+    """
+    Parses an exported theme JSON. Raises ValueError with a clear,
+    specific message if the file isn't valid JSON, isn't a theme file,
+    or is missing a required color — never raises a raw/confusing
+    exception type up to the caller.
+    """
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict) or "colors" not in data:
+        raise ValueError("This doesn't look like a LocalShare theme file (missing 'colors').")
+
+    colors = data["colors"]
+    if not isinstance(colors, dict):
+        raise ValueError("This theme file's 'colors' field is malformed.")
+
+    missing = [k for k in FULL_KEYS if k not in colors]
+    if missing:
+        raise ValueError(f"Theme file is missing required color(s): {', '.join(missing)}")
+
+    name = data.get("name") or "Imported Theme"
+    return name, {k: colors[k] for k in FULL_KEYS}
 
 
 def build_stylesheet(c: dict) -> str:

@@ -7,6 +7,7 @@ background thread; the address shown is live and Copy Address works.
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -39,9 +41,10 @@ from PySide6.QtWidgets import (
 
 from app.gui.drop_zone import DropZone
 from app.gui.gradient_background import AnimatedGradientBackground, STYLES
+from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
 from app.gui.qr_widget import generate_qr_pixmap
-from app.gui.theme import ACCENT_PRESETS, THEMES, build_stylesheet
+from app.gui.theme import ACCENT_PRESETS, FULL_KEYS, THEMES, build_stylesheet, theme_to_json, theme_from_json
 from app.paths import ICON_PATH
 from app.gui.update_checker import (
     check_for_update,
@@ -164,8 +167,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(380, 420)  # small enough to shrink comfortably, never unusably tiny
 
         _persisted = QSettings("LocalShare", "LocalShare")
+        self._custom_themes: dict[str, dict] = self._load_custom_themes(_persisted)
         self._current_theme_name = _persisted.value("theme_name", "Default Dark")
-        if self._current_theme_name not in THEMES:
+        if self._current_theme_name not in THEMES and self._current_theme_name not in self._custom_themes:
             self._current_theme_name = "Default Dark"  # guards against a stale/invalid saved name
         self._custom_accent = _persisted.value("custom_accent", None) or None  # QSettings can return "" instead of None
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
@@ -263,6 +267,8 @@ class MainWindow(QMainWindow):
 
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(THEMES.keys())
+        if self._custom_themes:
+            self.theme_combo.addItems(self._custom_themes.keys())
         self.theme_combo.setCurrentText(self._current_theme_name)
         self.theme_combo.currentTextChanged.connect(self._on_theme_selected)
 
@@ -950,16 +956,44 @@ class MainWindow(QMainWindow):
 
     def _current_base_colors(self) -> dict:
         """
-        A fresh copy of the currently selected named theme's palette.
-        Always a copy, never the shared THEMES dict entry itself —
-        accent-color customization mutates this per-window copy, and
-        mutating the module-level constants directly would permanently
+        A fresh copy of the currently selected theme's palette — either
+        one of the built-in THEMES or a custom one from
+        self._custom_themes. Always a copy, never the shared dict entry
+        itself — accent-color customization mutates this per-window
+        copy, and mutating the shared object directly would permanently
         corrupt that theme's "true default" for the rest of the app's
-        lifetime (and for every other theme built from the same DARK/
-        LIGHT base objects).
+        lifetime (and for every other theme built from the same base
+        objects).
         """
+        if self._current_theme_name in self._custom_themes:
+            return dict(self._custom_themes[self._current_theme_name])
         base = THEMES.get(self._current_theme_name, THEMES["Default Dark"])
         return dict(base)
+
+    def _load_custom_themes(self, settings: QSettings) -> dict:
+        """Reads saved custom themes from settings. Any corruption (a
+        hand-edited or half-written value) falls back to an empty dict
+        rather than crashing startup — losing custom themes gracefully
+        is far better than the app refusing to open."""
+        raw = settings.value("custom_themes", "")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            name: colors
+            for name, colors in data.items()
+            if isinstance(colors, dict) and all(k in colors for k in FULL_KEYS)
+        }
+
+    def _save_custom_themes(self) -> None:
+        QSettings("LocalShare", "LocalShare").setValue(
+            "custom_themes", json.dumps(self._custom_themes)
+        )
 
     def _is_current_theme_dark(self) -> bool:
         """Whether the active theme's background is dark or light — used
@@ -1028,6 +1062,8 @@ class MainWindow(QMainWindow):
         self.check_update_btn.set_glow_color(colors["accent"])
         self.settings_btn.set_glow_color(colors["accent"])
         self._settings_close_btn.set_glow_color(colors["accent"])
+        for btn in getattr(self, "_theme_action_buttons", []):
+            btn.set_glow_color(colors["accent"])
 
         # status dot color depends on server state, not just theme
         if self.server_handle.is_running:
@@ -1036,7 +1072,7 @@ class MainWindow(QMainWindow):
             self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
 
     def _on_theme_selected(self, theme_name: str) -> None:
-        if theme_name not in THEMES:
+        if theme_name not in THEMES and theme_name not in self._custom_themes:
             return
         self._current_theme_name = theme_name
         # Switching to a genuinely different named theme replaces its
@@ -1062,6 +1098,80 @@ class MainWindow(QMainWindow):
         self._custom_accent = color.name()
         self._apply_theme()
         QSettings("LocalShare", "LocalShare").setValue("custom_accent", color.name())
+
+    def _open_custom_theme_dialog(self) -> None:
+        dialog = CustomThemeDialog(self.theme_colors, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        colors = dialog.result_colors()
+
+        name, ok = QInputDialog.getText(self, "Save Theme", "Name:", text="My Theme")
+        name = name.strip()
+        if not ok or not name:
+            return  # cancelled, or saved with a blank name — don't save an unnamed theme
+
+        if name in THEMES:
+            QMessageBox.warning(
+                self,
+                "Name already used",
+                f'"{name}" is one of the built-in theme names — pick a different name.',
+            )
+            return
+
+        is_overwrite = name in self._custom_themes
+        self._custom_themes[name] = colors
+        self._save_custom_themes()
+
+        if not is_overwrite:
+            self.theme_combo.addItem(name)
+        self.theme_combo.setCurrentText(name)  # triggers _on_theme_selected, which applies it
+
+    def _export_current_theme(self) -> None:
+        default_filename = f"{self._current_theme_name.replace(' ', '_')}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Theme", default_filename, "JSON Files (*.json)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(theme_to_json(self._current_theme_name, self.theme_colors))
+        except OSError as exc:
+            QMessageBox.warning(self, "Couldn't export theme", f"Failed to save to:\n{path}\n\n{exc}")
+
+    def _import_theme(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Theme", "", "JSON Files (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as exc:
+            QMessageBox.warning(self, "Couldn't read file", f"Failed to open:\n{path}\n\n{exc}")
+            return
+
+        try:
+            name, colors = theme_from_json(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid theme file", str(exc))
+            return
+
+        # Avoid silently colliding with an existing name (built-in or
+        # already-imported custom theme) — append a numeric suffix
+        # rather than overwriting something without asking.
+        original_name = name
+        suffix = 1
+        while name in THEMES or name in self._custom_themes:
+            suffix += 1
+            name = f"{original_name} ({suffix})"
+
+        self._custom_themes[name] = colors
+        self._save_custom_themes()
+        self.theme_combo.addItem(name)
+        self.theme_combo.setCurrentText(name)
+        QMessageBox.information(self, "Theme imported", f'Imported as "{name}" and applied.')
 
     def _build_settings_dialog(self) -> None:
         """
@@ -1129,6 +1239,20 @@ class MainWindow(QMainWindow):
         theme_row.addStretch()
         theme_row.addWidget(self.theme_combo)
         layout.addLayout(theme_row)
+
+        theme_actions_row = QHBoxLayout()
+        create_theme_btn = HoverGlowButton("+ Create Theme", glow_color=self.theme_colors["accent"])
+        create_theme_btn.clicked.connect(self._open_custom_theme_dialog)
+        export_theme_btn = HoverGlowButton("Export…", glow_color=self.theme_colors["accent"])
+        export_theme_btn.clicked.connect(self._export_current_theme)
+        import_theme_btn = HoverGlowButton("Import…", glow_color=self.theme_colors["accent"])
+        import_theme_btn.clicked.connect(self._import_theme)
+        theme_actions_row.addWidget(create_theme_btn)
+        theme_actions_row.addStretch()
+        theme_actions_row.addWidget(export_theme_btn)
+        theme_actions_row.addWidget(import_theme_btn)
+        layout.addLayout(theme_actions_row)
+        self._theme_action_buttons = [create_theme_btn, export_theme_btn, import_theme_btn]
 
         accent_swatch_row = QHBoxLayout()
         accent_swatch_row.addWidget(QLabel("Accent color"))
