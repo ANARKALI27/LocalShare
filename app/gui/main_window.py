@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -172,6 +173,8 @@ class MainWindow(QMainWindow):
         if self._current_theme_name not in THEMES and self._current_theme_name not in self._custom_themes:
             self._current_theme_name = "Default Dark"  # guards against a stale/invalid saved name
         self._custom_accent = _persisted.value("custom_accent", None) or None  # QSettings can return "" instead of None
+        self._bg_image_path: str | None = _persisted.value("image_path", None) or None
+        self._bg_video_path: str | None = _persisted.value("video_path", None) or None
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
         self.theme_colors = self._compute_theme_colors()
         # Applied at the QApplication level, not just this window — a
@@ -288,37 +291,108 @@ class MainWindow(QMainWindow):
             swatch.clicked.connect(lambda checked=False, hex_color=preset_hex: self._choose_accent_preset(hex_color))
             self.accent_preset_buttons.append(swatch)
 
-        _gradient_settings = QSettings("LocalShare", "LocalShare")
-        _persisted_gradient_style = _gradient_settings.value("gradient_style", STYLES[0] if STYLES else "Sweep")
-        _persisted_gradient_enabled = _gradient_settings.value("gradient_enabled", False, type=bool)
+        _bg_settings = QSettings("LocalShare", "LocalShare")
+        _persisted_bg_mode = _bg_settings.value("background_mode", "solid")
+        if _persisted_bg_mode not in ("solid", "gradient", "image", "video"):
+            _persisted_bg_mode = "solid"
+        _persisted_gradient_style = _bg_settings.value("gradient_style", STYLES[0] if STYLES else "Sweep")
+        _persisted_image_path = _bg_settings.value("image_path", "") or None
+        _persisted_image_position = _bg_settings.value("image_position", "Center")
+        _persisted_image_scaling = _bg_settings.value("image_scaling", "Fill")
+        _persisted_image_opacity = float(_bg_settings.value("image_opacity", 1.0))
+        _persisted_overlay_opacity = float(_bg_settings.value("overlay_opacity", 0.35))
+        _persisted_video_path = _bg_settings.value("video_path", "") or None
+        _persisted_video_loop = _bg_settings.value("video_loop", True, type=bool)
+        _persisted_video_autoplay = _bg_settings.value("video_autoplay", True, type=bool)
+        _persisted_video_opacity = float(_bg_settings.value("video_opacity", 1.0))
+        _persisted_video_speed = float(_bg_settings.value("video_speed", 1.0))
 
+        # -- mode selector --------------------------------------------------------------
+        self.bg_mode_group = QButtonGroup(self)
+        self.bg_mode_solid_radio = QRadioButton("Solid")
+        self.bg_mode_gradient_radio = QRadioButton("Gradient")
+        self.bg_mode_image_radio = QRadioButton("Image")
+        self.bg_mode_video_radio = QRadioButton("Video")
+        for btn in (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio):
+            self.bg_mode_group.addButton(btn)
+        {"solid": self.bg_mode_solid_radio, "gradient": self.bg_mode_gradient_radio,
+         "image": self.bg_mode_image_radio, "video": self.bg_mode_video_radio}[_persisted_bg_mode].setChecked(True)
+
+        # -- gradient sub-panel --------------------------------------------------------------
         self.gradient_style_combo = QComboBox()
         self.gradient_style_combo.addItems(STYLES)
         if _persisted_gradient_style in STYLES:
             self.gradient_style_combo.setCurrentText(_persisted_gradient_style)
-        self.gradient_style_combo.setEnabled(_persisted_gradient_enabled)
         self.gradient_style_combo.currentTextChanged.connect(self.gradient_background.set_style)
         self.gradient_style_combo.currentTextChanged.connect(
             lambda style: QSettings("LocalShare", "LocalShare").setValue("gradient_style", style)
         )
 
-        self.gradient_bg_checkbox = QCheckBox("🌈 Animated gradient background")
-        self.gradient_bg_checkbox.setToolTip(
-            "A slowly shifting gradient behind the window content, instead of a flat color."
-        )
-        self.gradient_bg_checkbox.setChecked(_persisted_gradient_enabled)
-        self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
-        self.gradient_bg_checkbox.toggled.connect(self.gradient_style_combo.setEnabled)
-        self.gradient_bg_checkbox.toggled.connect(
-            lambda checked: QSettings("LocalShare", "LocalShare").setValue("gradient_enabled", checked)
-        )
+        # -- image sub-panel --------------------------------------------------------------
+        self.choose_image_btn = HoverGlowButton("Choose Image…", glow_color=self.theme_colors["accent"])
+        self.choose_image_btn.clicked.connect(self._choose_background_image)
+        self.image_path_label = QLabel(os.path.basename(_persisted_image_path) if _persisted_image_path else "None")
+        self.image_position_combo = QComboBox()
+        self.image_position_combo.addItems(["Center", "Top", "Bottom", "Left", "Right"])
+        self.image_position_combo.setCurrentText(_persisted_image_position)
+        self.image_scaling_combo = QComboBox()
+        self.image_scaling_combo.addItems(["Fill", "Fit", "Stretch", "Original"])
+        self.image_scaling_combo.setCurrentText(_persisted_image_scaling)
+        self.image_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.image_opacity_slider.setRange(0, 100)
+        self.image_opacity_slider.setValue(int(_persisted_image_opacity * 100))
+        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_opacity_slider.setRange(0, 100)
+        self.overlay_opacity_slider.setValue(int(_persisted_overlay_opacity * 100))
+        for widget in (self.image_position_combo, self.image_scaling_combo, self.image_opacity_slider, self.overlay_opacity_slider):
+            (widget.currentTextChanged if isinstance(widget, QComboBox) else widget.valueChanged).connect(
+                self._apply_image_background_settings
+            )
 
-        # Apply the restored values to the actual background widget
-        # explicitly — setCurrentText()/setChecked() above ran before
-        # these signal connections existed, so relying on the signals
-        # alone wouldn't reflect a restored "on" state at startup.
-        self.gradient_background.set_style(self.gradient_style_combo.currentText())
-        self.gradient_background.set_animated(_persisted_gradient_enabled)
+        # -- video sub-panel --------------------------------------------------------------
+        self.choose_video_btn = HoverGlowButton("Choose Video…", glow_color=self.theme_colors["accent"])
+        self.choose_video_btn.clicked.connect(self._choose_background_video)
+        self.video_path_label = QLabel(os.path.basename(_persisted_video_path) if _persisted_video_path else "None")
+        self.video_loop_checkbox = QCheckBox("Loop video")
+        self.video_loop_checkbox.setChecked(_persisted_video_loop)
+        self.video_mute_checkbox = QCheckBox("Mute audio")
+        self.video_mute_checkbox.setChecked(True)
+        self.video_mute_checkbox.setEnabled(False)  # always muted — see gradient_background.py; nothing to toggle
+        self.video_mute_checkbox.setToolTip("Background video never has audio output attached — always silent.")
+        self.video_autoplay_checkbox = QCheckBox("Play automatically")
+        self.video_autoplay_checkbox.setChecked(_persisted_video_autoplay)
+        self.video_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.video_opacity_slider.setRange(0, 100)
+        self.video_opacity_slider.setValue(int(_persisted_video_opacity * 100))
+        self.video_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.video_speed_slider.setRange(50, 200)  # 0.5x .. 2.0x
+        self.video_speed_slider.setValue(int(_persisted_video_speed * 100))
+        for widget in (self.video_loop_checkbox, self.video_autoplay_checkbox, self.video_opacity_slider, self.video_speed_slider):
+            (widget.toggled if isinstance(widget, QCheckBox) else widget.valueChanged).connect(
+                self._apply_video_background_settings
+            )
+
+        self.bg_mode_solid_radio.toggled.connect(lambda checked: checked and self._set_background_mode("solid"))
+        self.bg_mode_gradient_radio.toggled.connect(lambda checked: checked and self._set_background_mode("gradient"))
+        self.bg_mode_image_radio.toggled.connect(lambda checked: checked and self._set_background_mode("image"))
+        self.bg_mode_video_radio.toggled.connect(lambda checked: checked and self._set_background_mode("video"))
+
+        # Apply the restored state to the actual widget now — the
+        # signal connections above were wired up after the persisted
+        # values were loaded, so restoring at startup needs this
+        # explicit call rather than relying on signals alone.
+        self.gradient_background.set_style(_persisted_gradient_style if _persisted_gradient_style in STYLES else STYLES[0])
+        if _persisted_image_path:
+            self.gradient_background.set_image(
+                _persisted_image_path, _persisted_image_position, _persisted_image_scaling,
+                _persisted_image_opacity, _persisted_overlay_opacity,
+            )
+        if _persisted_video_path:
+            self.gradient_background.set_video(
+                _persisted_video_path, _persisted_video_loop, True, _persisted_video_autoplay,
+                _persisted_video_opacity, _persisted_video_speed,
+            )
+        self.gradient_background.set_mode(_persisted_bg_mode)
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -1099,6 +1173,90 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         QSettings("LocalShare", "LocalShare").setValue("custom_accent", color.name())
 
+    def _set_background_mode(self, mode: str) -> None:
+        self.gradient_background.set_mode(mode)
+        QSettings("LocalShare", "LocalShare").setValue("background_mode", mode)
+        self._refresh_background_subpanel_visibility(mode)
+
+    def _refresh_background_subpanel_visibility(self, mode: str) -> None:
+        self.gradient_panel.setVisible(mode == "gradient")
+        self.image_panel.setVisible(mode == "image")
+        self.video_panel.setVisible(mode == "video")
+
+    def _choose_background_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Background Image", "", "Images (*.jpg *.jpeg *.png *.webp)"
+        )
+        if not path:
+            return
+        ok = self.gradient_background.set_image(
+            path,
+            self.image_position_combo.currentText(),
+            self.image_scaling_combo.currentText(),
+            self.image_opacity_slider.value() / 100.0,
+            self.overlay_opacity_slider.value() / 100.0,
+        )
+        if not ok:
+            QMessageBox.warning(
+                self, "Couldn't load image", f"This file couldn't be loaded as an image:\n{path}"
+            )
+            return
+        self._bg_image_path = path
+        self.image_path_label.setText(os.path.basename(path))
+        QSettings("LocalShare", "LocalShare").setValue("image_path", path)
+
+    def _apply_image_background_settings(self, *_args) -> None:
+        settings = QSettings("LocalShare", "LocalShare")
+        position = self.image_position_combo.currentText()
+        scaling = self.image_scaling_combo.currentText()
+        opacity = self.image_opacity_slider.value() / 100.0
+        overlay = self.overlay_opacity_slider.value() / 100.0
+        settings.setValue("image_position", position)
+        settings.setValue("image_scaling", scaling)
+        settings.setValue("image_opacity", opacity)
+        settings.setValue("overlay_opacity", overlay)
+        if self._bg_image_path:
+            self.gradient_background.set_image(self._bg_image_path, position, scaling, opacity, overlay)
+
+    def _choose_background_video(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Background Video", "", "Videos (*.mp4 *.webm)"
+        )
+        if not path:
+            return
+        ok = self.gradient_background.set_video(
+            path,
+            self.video_loop_checkbox.isChecked(),
+            True,  # always muted — see gradient_background.py
+            self.video_autoplay_checkbox.isChecked(),
+            self.video_opacity_slider.value() / 100.0,
+            self.video_speed_slider.value() / 100.0,
+        )
+        if not ok:
+            error_detail = getattr(self.gradient_background, "_video_error", None)
+            message = (
+                f"This file couldn't be loaded as a background video:\n{path}"
+                + (f"\n\n{error_detail}" if error_detail else "")
+            )
+            QMessageBox.warning(self, "Couldn't load video", message)
+            return
+        self._bg_video_path = path
+        self.video_path_label.setText(os.path.basename(path))
+        QSettings("LocalShare", "LocalShare").setValue("video_path", path)
+
+    def _apply_video_background_settings(self, *_args) -> None:
+        settings = QSettings("LocalShare", "LocalShare")
+        loop = self.video_loop_checkbox.isChecked()
+        autoplay = self.video_autoplay_checkbox.isChecked()
+        opacity = self.video_opacity_slider.value() / 100.0
+        speed = self.video_speed_slider.value() / 100.0
+        settings.setValue("video_loop", loop)
+        settings.setValue("video_autoplay", autoplay)
+        settings.setValue("video_opacity", opacity)
+        settings.setValue("video_speed", speed)
+        if self._bg_video_path:
+            self.gradient_background.set_video(self._bg_video_path, loop, True, autoplay, opacity, speed)
+
     def _delete_current_theme(self) -> None:
         name = self._current_theme_name
         if name not in self._custom_themes:
@@ -1304,13 +1462,87 @@ class MainWindow(QMainWindow):
         accent_custom_row.addWidget(self.accent_color_btn)
         layout.addLayout(accent_custom_row)
 
-        layout.addWidget(self.gradient_bg_checkbox)
+        background_label = QLabel("BACKGROUND")
+        background_label.setObjectName("SectionLabel")
+        layout.addWidget(background_label)
 
+        bg_mode_row = QHBoxLayout()
+        for btn in (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio):
+            bg_mode_row.addWidget(btn)
+        layout.addLayout(bg_mode_row)
+
+        # -- gradient panel --
+        self.gradient_panel = QWidget()
+        gradient_panel_layout = QVBoxLayout(self.gradient_panel)
+        gradient_panel_layout.setContentsMargins(0, 4, 0, 0)
         gradient_style_row = QHBoxLayout()
         gradient_style_row.addWidget(QLabel("Gradient style"))
         gradient_style_row.addStretch()
         gradient_style_row.addWidget(self.gradient_style_combo)
-        layout.addLayout(gradient_style_row)
+        gradient_panel_layout.addLayout(gradient_style_row)
+        layout.addWidget(self.gradient_panel)
+
+        # -- image panel --
+        self.image_panel = QWidget()
+        image_panel_layout = QVBoxLayout(self.image_panel)
+        image_panel_layout.setContentsMargins(0, 4, 0, 0)
+        image_choose_row = QHBoxLayout()
+        image_choose_row.addWidget(self.choose_image_btn)
+        image_choose_row.addWidget(self.image_path_label)
+        image_choose_row.addStretch()
+        image_panel_layout.addLayout(image_choose_row)
+        image_position_row = QHBoxLayout()
+        image_position_row.addWidget(QLabel("Position"))
+        image_position_row.addStretch()
+        image_position_row.addWidget(self.image_position_combo)
+        image_panel_layout.addLayout(image_position_row)
+        image_scaling_row = QHBoxLayout()
+        image_scaling_row.addWidget(QLabel("Scaling"))
+        image_scaling_row.addStretch()
+        image_scaling_row.addWidget(self.image_scaling_combo)
+        image_panel_layout.addLayout(image_scaling_row)
+        image_opacity_row = QHBoxLayout()
+        image_opacity_row.addWidget(QLabel("Opacity"))
+        image_opacity_row.addWidget(self.image_opacity_slider)
+        image_panel_layout.addLayout(image_opacity_row)
+        overlay_opacity_row = QHBoxLayout()
+        overlay_opacity_row.addWidget(QLabel("Overlay"))
+        overlay_opacity_row.addWidget(self.overlay_opacity_slider)
+        image_panel_layout.addLayout(overlay_opacity_row)
+        layout.addWidget(self.image_panel)
+
+        # -- video panel --
+        self.video_panel = QWidget()
+        video_panel_layout = QVBoxLayout(self.video_panel)
+        video_panel_layout.setContentsMargins(0, 4, 0, 0)
+        video_choose_row = QHBoxLayout()
+        video_choose_row.addWidget(self.choose_video_btn)
+        video_choose_row.addWidget(self.video_path_label)
+        video_choose_row.addStretch()
+        video_panel_layout.addLayout(video_choose_row)
+        video_panel_layout.addWidget(self.video_loop_checkbox)
+        video_panel_layout.addWidget(self.video_mute_checkbox)
+        video_panel_layout.addWidget(self.video_autoplay_checkbox)
+        video_opacity_row = QHBoxLayout()
+        video_opacity_row.addWidget(QLabel("Opacity"))
+        video_opacity_row.addWidget(self.video_opacity_slider)
+        video_panel_layout.addLayout(video_opacity_row)
+        video_speed_row = QHBoxLayout()
+        video_speed_row.addWidget(QLabel("Speed"))
+        video_speed_row.addWidget(self.video_speed_slider)
+        video_panel_layout.addLayout(video_speed_row)
+        video_note = QLabel(
+            "Video backgrounds are the least-tested part of LocalShare — if playback "
+            "looks wrong or the app slows down, switch back to Solid or Gradient."
+        )
+        video_note.setWordWrap(True)
+        video_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        video_panel_layout.addWidget(video_note)
+        layout.addWidget(self.video_panel)
+
+        self._refresh_background_subpanel_visibility(
+            QSettings("LocalShare", "LocalShare").value("background_mode", "solid")
+        )
 
         updates_label = QLabel("UPDATES")
         updates_label.setObjectName("SectionLabel")
