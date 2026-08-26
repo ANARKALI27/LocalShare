@@ -192,6 +192,20 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
+        # Resume shares first (if enabled) — this may itself trigger
+        # auto-start-on-add if that's also enabled, which is the
+        # correct behavior: restored shares should come back online
+        # the same way freshly-dropped ones would.
+        self._maybe_resume_previous_shares()
+
+        # Independent of resuming shares: start the server immediately
+        # on launch if that preference is on, even with nothing shared
+        # yet (e.g. someone who adds files a moment later via Explorer
+        # drag-and-drop still wants the server already listening).
+        if QSettings("LocalShare", "LocalShare").value("auto_start_on_launch", False, type=bool):
+            if not self.server_handle.is_running:
+                self._begin_server_start()
+
         # Slight delay so this doesn't compete with the splash screen /
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
@@ -295,7 +309,7 @@ class MainWindow(QMainWindow):
         status_row = QHBoxLayout()
         self.status_dot = QLabel("○")
         self.status_dot.setObjectName("StatusDot")
-        self.status_label = QLabel("Server: Stopped")
+        self.status_label = QLabel("Ready to Share")
         self.address_label = QLabel("Address: —")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         status_row.addWidget(self.status_dot)
@@ -511,6 +525,30 @@ class MainWindow(QMainWindow):
             list_item.setData(Qt.ItemDataRole.UserRole, item.id)
             list_item.setToolTip(item.path)
             self.shared_list.addItem(list_item)
+        self._persist_shared_paths()
+        self._maybe_auto_start_sharing()
+
+    def _persist_shared_paths(self) -> None:
+        """Remembers what's currently shared, so 'Automatically resume
+        previous shares' (Settings -> Sharing) has something to restore
+        on next launch."""
+        paths = [item.path for item in self.share_manager.all_items()]
+        QSettings("LocalShare", "LocalShare").setValue("last_shared_paths", paths)
+
+    def _maybe_resume_previous_shares(self) -> None:
+        settings = QSettings("LocalShare", "LocalShare")
+        if not settings.value("auto_resume_shares", False, type=bool):
+            return
+        saved_paths = settings.value("last_shared_paths", [])
+        if not saved_paths:
+            return
+        if isinstance(saved_paths, str):
+            saved_paths = [saved_paths]  # QSettings collapses a single-item list to a bare string
+        for path in saved_paths:
+            # add_path() already handles a path that no longer exists
+            # by returning None — resuming is inherently best-effort,
+            # so a missing file is silently skipped rather than erroring
+            self.share_manager.add_path(path)
 
     def _show_item_context_menu(self, pos) -> None:
         list_item = self.shared_list.itemAt(pos)
@@ -552,13 +590,37 @@ class MainWindow(QMainWindow):
     # -- server controls -----------------------------------------------------------
     def _on_toggle_server_clicked(self) -> None:
         if self.server_handle.is_running:
-            self._stop_server()
+            self._confirm_stop_sharing()
             return
 
         if len(self.share_manager) == 0:
             QMessageBox.information(
                 self, "Nothing to share", "Drag in a file or folder before starting the server."
             )
+            return
+
+        self._begin_server_start()
+
+    def _confirm_stop_sharing(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Stop sharing?",
+            "This will disconnect active sharing sessions.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._stop_server()
+
+    def _begin_server_start(self) -> None:
+        """
+        The actual "start the server" logic, factored out so both the
+        manual Start Sharing button and automatic sharing-on-add (see
+        _maybe_auto_start_sharing) go through the exact same path —
+        one place that configures PIN protection and kicks off the
+        background start worker, not two copies that could drift apart.
+        """
+        if self.server_handle.is_running:
             return
 
         # No token/signup validation needed for Global mode anymore —
@@ -580,11 +642,33 @@ class MainWindow(QMainWindow):
 
         self.toggle_server_btn.setEnabled(False)
         self.toggle_server_btn.setText("Starting…")
+        self.status_dot.setText("◌")
+        self.status_dot.setStyleSheet(f"color: {self.theme_colors['accent']}; font-size: 14px;")
+        self.status_label.setText("Starting server…")
 
         self._start_worker = _ServerStartWorker(self.server_handle)
         self._start_worker.finished_ok.connect(self._on_server_started)
         self._start_worker.finished_error.connect(self._on_server_start_failed)
         self._start_worker.start()
+
+    def _maybe_auto_start_sharing(self) -> None:
+        """
+        Starts the server automatically the instant the first item is
+        shared, per Settings -> Sharing -> "Automatically start sharing
+        when files are added" (on by default). Only triggers going
+        from empty to non-empty — adding more items afterward, or
+        re-adding after an explicit Stop Sharing, doesn't restart
+        anything on its own.
+        """
+        if self.server_handle.is_running:
+            return
+        if self._start_worker is not None and self._start_worker.isRunning():
+            return  # already starting
+        if len(self.share_manager) == 0:
+            return
+        if not QSettings("LocalShare", "LocalShare").value("auto_start_on_add", True, type=bool):
+            return
+        self._begin_server_start()
 
     def _show_pin(self, pin: str) -> None:
         self.pin_display_label.setText(f"PIN: {pin}")
@@ -601,7 +685,7 @@ class MainWindow(QMainWindow):
     def _on_server_started(self, address: str) -> None:
         self.status_dot.setText("●")
         self.status_dot.setStyleSheet(f"color: {self.theme_colors['success']}; font-size: 14px;")
-        self.status_label.setText("Server: Running")
+        self.status_label.setText("Sharing")
         self._local_address = address
         self.copy_address_btn.setEnabled(True)
         self.toggle_server_btn.setText("Stop Sharing")
@@ -758,6 +842,9 @@ class MainWindow(QMainWindow):
     def _on_server_start_failed(self, error: str) -> None:
         self.toggle_server_btn.setText("Start Sharing")
         self.toggle_server_btn.setEnabled(True)
+        self.status_dot.setText("●")
+        self.status_dot.setStyleSheet(f"color: {self.theme_colors['danger']}; font-size: 14px;")
+        self.status_label.setText("Server Error")
         QMessageBox.critical(
             self,
             "Unable to start server",
@@ -789,7 +876,7 @@ class MainWindow(QMainWindow):
 
         self.status_dot.setText("○")
         self.status_dot.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 14px;")
-        self.status_label.setText("Server: Stopped")
+        self.status_label.setText("Ready to Share")
         self.address_label.setText("Address: —")
         self.copy_address_btn.setEnabled(False)
         self.toggle_server_btn.setText("Start Sharing")
@@ -904,6 +991,49 @@ class MainWindow(QMainWindow):
         dialog.setMinimumWidth(320)
         layout = QVBoxLayout(dialog)
         layout.setSpacing(14)
+
+        sharing_label = QLabel("SHARING")
+        sharing_label.setObjectName("SectionLabel")
+        layout.addWidget(sharing_label)
+
+        settings = QSettings("LocalShare", "LocalShare")
+
+        self.auto_start_on_add_checkbox = QCheckBox("Automatically start sharing when files are added")
+        self.auto_start_on_add_checkbox.setChecked(
+            settings.value("auto_start_on_add", True, type=bool)
+        )
+        self.auto_start_on_add_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue(
+                "auto_start_on_add", checked
+            )
+        )
+        layout.addWidget(self.auto_start_on_add_checkbox)
+
+        self.auto_start_on_launch_checkbox = QCheckBox("Automatically start server when LocalShare launches")
+        self.auto_start_on_launch_checkbox.setChecked(
+            settings.value("auto_start_on_launch", False, type=bool)
+        )
+        self.auto_start_on_launch_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue(
+                "auto_start_on_launch", checked
+            )
+        )
+        layout.addWidget(self.auto_start_on_launch_checkbox)
+
+        self.auto_resume_shares_checkbox = QCheckBox("Automatically resume previous shares")
+        self.auto_resume_shares_checkbox.setToolTip(
+            "Re-adds whatever was shared last session, on launch — only files/folders "
+            "that still exist at their original location are restored."
+        )
+        self.auto_resume_shares_checkbox.setChecked(
+            settings.value("auto_resume_shares", False, type=bool)
+        )
+        self.auto_resume_shares_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue(
+                "auto_resume_shares", checked
+            )
+        )
+        layout.addWidget(self.auto_resume_shares_checkbox)
 
         appearance_label = QLabel("APPEARANCE")
         appearance_label.setObjectName("SectionLabel")
