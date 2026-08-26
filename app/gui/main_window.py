@@ -41,7 +41,7 @@ from app.gui.drop_zone import DropZone
 from app.gui.gradient_background import AnimatedGradientBackground, STYLES
 from app.gui.hover_button import HoverGlowButton
 from app.gui.qr_widget import generate_qr_pixmap
-from app.gui.theme import DARK, LIGHT, build_stylesheet
+from app.gui.theme import ACCENT_PRESETS, THEMES, build_stylesheet
 from app.paths import ICON_PATH
 from app.gui.update_checker import (
     check_for_update,
@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
         self.resize(520, 720)
         self.setMinimumSize(380, 420)  # small enough to shrink comfortably, never unusably tiny
 
-        self._is_dark = True
+        self._current_theme_name = "Default Dark"
         self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
         self.theme_colors = self._current_base_colors()
@@ -254,13 +254,30 @@ class MainWindow(QMainWindow):
         # These live inside the Settings dialog (built below), not the
         # main window layout — created here so they're available for
         # theme-refresh/glow-color updates the same way as before.
-        self.accent_color_btn = HoverGlowButton("🎨", glow_color=self.theme_colors["accent"])
+        self.accent_color_btn = HoverGlowButton("🎨 Custom…", glow_color=self.theme_colors["accent"])
         self.accent_color_btn.setToolTip("Choose a custom accent color")
         self.accent_color_btn.clicked.connect(self._choose_accent_color)
 
-        self.theme_toggle_btn = HoverGlowButton("☀️ Light", glow_color=self.theme_colors["accent"])
-        self.theme_toggle_btn.setToolTip("Switch between dark and light theme")
-        self.theme_toggle_btn.clicked.connect(self._toggle_theme)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(THEMES.keys())
+        self.theme_combo.setCurrentText(self._current_theme_name)
+        self.theme_combo.currentTextChanged.connect(self._on_theme_selected)
+
+        # Small clickable color-swatch buttons, one per accent preset —
+        # built once here; styling (rounded, filled with that preset's
+        # color) doesn't change with the app theme, so no glow-color
+        # refresh needed for these like the other buttons.
+        self.accent_preset_buttons: list[QPushButton] = []
+        for preset_name, preset_hex in ACCENT_PRESETS.items():
+            swatch = QPushButton()
+            swatch.setFixedSize(22, 22)
+            swatch.setToolTip(preset_name)
+            swatch.setCursor(Qt.CursorShape.PointingHandCursor)
+            swatch.setStyleSheet(
+                f"background-color: {preset_hex}; border-radius: 11px; border: 1px solid rgba(255,255,255,0.15);"
+            )
+            swatch.clicked.connect(lambda checked=False, hex_color=preset_hex: self._choose_accent_preset(hex_color))
+            self.accent_preset_buttons.append(swatch)
 
         self.gradient_style_combo = QComboBox()
         self.gradient_style_combo.addItems(STYLES)
@@ -900,14 +917,23 @@ class MainWindow(QMainWindow):
 
     def _current_base_colors(self) -> dict:
         """
-        A fresh copy of the active base palette (dark or light). Always
-        a copy, never the shared DARK/LIGHT dict itself — accent-color
-        customization mutates this per-window copy, and mutating the
-        module-level constants directly would permanently corrupt the
-        "true default" palette for the rest of the app's lifetime.
+        A fresh copy of the currently selected named theme's palette.
+        Always a copy, never the shared THEMES dict entry itself —
+        accent-color customization mutates this per-window copy, and
+        mutating the module-level constants directly would permanently
+        corrupt that theme's "true default" for the rest of the app's
+        lifetime (and for every other theme built from the same DARK/
+        LIGHT base objects).
         """
-        base = DARK if self._is_dark else LIGHT
+        base = THEMES.get(self._current_theme_name, THEMES["Default Dark"])
         return dict(base)
+
+    def _is_current_theme_dark(self) -> bool:
+        """Whether the active theme's background is dark or light — used
+        to pick a lighten-vs-darken direction for a custom accent's hover
+        state. QColor.lightness() (HSL, 0-255) is a simple, good-enough
+        signal for this; doesn't need to be colorimetrically precise."""
+        return QColor(self.theme_colors["bg"]).lightness() < 128
 
     def _compute_hover_color(self, hex_color: str) -> str:
         """
@@ -917,7 +943,7 @@ class MainWindow(QMainWindow):
         between the built-in accent/accent_hover pairs in each palette.
         """
         color = QColor(hex_color)
-        adjusted = color.lighter(115) if self._is_dark else color.darker(115)
+        adjusted = color.lighter(115) if self._is_current_theme_dark() else color.darker(115)
         return adjusted.name()
 
     def _apply_theme(self) -> None:
@@ -926,12 +952,12 @@ class MainWindow(QMainWindow):
         colors = self._current_base_colors()
         if self._custom_accent:
             colors["accent"] = self._custom_accent
+        self.theme_colors = colors  # set before _compute_hover_color(), which reads theme_colors["bg"]
+        if self._custom_accent:
             colors["accent_hover"] = self._compute_hover_color(self._custom_accent)
-        self.theme_colors = colors
 
         QApplication.instance().setStyleSheet(build_stylesheet(colors))
         self.drop_zone.set_theme(colors)
-        self.theme_toggle_btn.setText("☀️ Light" if self._is_dark else "🌙 Dark")
 
         dim_style = f"color: {colors['text_dim']}; font-size: 12px;"
         self.webdav_status_label.setStyleSheet(dim_style)
@@ -950,9 +976,10 @@ class MainWindow(QMainWindow):
             f"color: {colors['accent']}; font-size: 12px; font-weight: 600;"
         )
         self.pin_mandatory_label.setStyleSheet(f"color: {colors['text_dim']}; font-size: 13px;")
+        if hasattr(self, "_about_label"):
+            self._about_label.setStyleSheet(f"color: {colors['text_dim']}; font-size: 12px;")
         self.gradient_background.set_colors(colors["bg"], colors["accent"])
         self.accent_color_btn.set_glow_color(colors["accent"])
-        self.theme_toggle_btn.set_glow_color(colors["accent"])
         self.toggle_server_btn.set_glow_color(colors["accent"])
         self.save_qr_btn.set_glow_color(colors["accent"])
         self.copy_address_btn.set_glow_color(colors["accent"])
@@ -966,8 +993,19 @@ class MainWindow(QMainWindow):
         else:
             self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
 
-    def _toggle_theme(self) -> None:
-        self._is_dark = not self._is_dark
+    def _on_theme_selected(self, theme_name: str) -> None:
+        if theme_name not in THEMES:
+            return
+        self._current_theme_name = theme_name
+        # Switching to a genuinely different named theme replaces its
+        # look wholesale, including that theme's own accent — a custom
+        # accent picked under a previous theme shouldn't silently stick
+        # around and clash with the newly chosen palette.
+        self._custom_accent = None
+        self._apply_theme()
+
+    def _choose_accent_preset(self, hex_color: str) -> None:
+        self._custom_accent = hex_color
         self._apply_theme()
 
     def _choose_accent_color(self) -> None:
@@ -1042,14 +1080,20 @@ class MainWindow(QMainWindow):
         theme_row = QHBoxLayout()
         theme_row.addWidget(QLabel("Theme"))
         theme_row.addStretch()
-        theme_row.addWidget(self.theme_toggle_btn)
+        theme_row.addWidget(self.theme_combo)
         layout.addLayout(theme_row)
 
-        accent_row = QHBoxLayout()
-        accent_row.addWidget(QLabel("Accent color"))
-        accent_row.addStretch()
-        accent_row.addWidget(self.accent_color_btn)
-        layout.addLayout(accent_row)
+        accent_swatch_row = QHBoxLayout()
+        accent_swatch_row.addWidget(QLabel("Accent color"))
+        accent_swatch_row.addStretch()
+        for swatch in self.accent_preset_buttons:
+            accent_swatch_row.addWidget(swatch)
+        layout.addLayout(accent_swatch_row)
+
+        accent_custom_row = QHBoxLayout()
+        accent_custom_row.addStretch()
+        accent_custom_row.addWidget(self.accent_color_btn)
+        layout.addLayout(accent_custom_row)
 
         layout.addWidget(self.gradient_bg_checkbox)
 
@@ -1063,6 +1107,14 @@ class MainWindow(QMainWindow):
         updates_label.setObjectName("SectionLabel")
         layout.addWidget(updates_label)
         layout.addWidget(self.auto_check_updates_checkbox)
+
+        about_label = QLabel("ABOUT")
+        about_label.setObjectName("SectionLabel")
+        layout.addWidget(about_label)
+        about_text = QLabel(f"LocalShare v{APP_VERSION} — Developed by ANARKALI")
+        about_text.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        self._about_label = about_text  # kept for theme refresh
+        layout.addWidget(about_text)
 
         close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
         close_btn.clicked.connect(dialog.accept)
