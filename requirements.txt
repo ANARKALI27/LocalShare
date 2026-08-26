@@ -15,8 +15,10 @@ cheroot>=10.0
 # Phase 8: QR code for phone access
 qrcode[pil]>=7.4
 
-# v2: internet sharing via ngrok tunnel (optional — see README)
-pyngrok>=7.0
+# v2: internet sharing via Cloudflare Quick Tunnel (optional — see README)
+# No Python package needed — requires the "cloudflared" program
+# installed separately and on PATH (not pip-installable; see
+# app/server/tunnel.py for install instructions per OS).
 # wsgidav>=4.3          # Phase 6: WebDAV / Explorer integration
 # qrcode[pil]>=7.4       # Phase 8: QR code
 # zeroconf>=0.132        # Phase 8: LAN discovery

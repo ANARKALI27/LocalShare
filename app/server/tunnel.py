@@ -1,94 +1,154 @@
 """
-Internet sharing via ngrok tunnel.
+Internet sharing via Cloudflare Quick Tunnel.
 
 This is what makes "Local Network + Internet" mode reachable from
-outside your Wi-Fi: ngrok opens an outbound connection from your
-machine to ngrok's servers and hands back a public HTTPS URL that
-forwards to your local server. No port forwarding or router
-configuration needed — and since the connection is initiated
-outbound from your machine, it works even behind NAT/CGNAT.
+outside your Wi-Fi: cloudflared opens an outbound connection from your
+machine to Cloudflare's edge network and hands back a public HTTPS URL
+("Quick Tunnel," e.g. https://random-words.trycloudflare.com) that
+forwards to your local server. No port forwarding, no router
+configuration, and — unlike the ngrok-based version this replaced —
+no account or signup at all.
 
-Requires a free ngrok account and an authtoken (https://ngrok.com) —
-this is ngrok's own requirement, not something this app adds.
-pyngrok manages downloading the actual ngrok binary itself on first
-use (needs internet access, which internet-sharing mode already
-assumes).
+Requires the "cloudflared" program to be installed and on PATH. This
+is Cloudflare's own binary, not a Python package — there's no
+pip-installable wrapper managing it automatically the way pyngrok did
+for ngrok, so start() checks for it explicitly and gives install
+instructions if it's missing.
 
-Honest limitation: ngrok's free tier shows a one-time interstitial
-warning page to first-time visitors before they reach the actual
-site. That's expected ngrok behavior, not a bug in LocalShare.
+Honest limitations, straight from Cloudflare's own documentation:
+  - Quick Tunnels are explicitly labeled "for testing and development,
+    not production" — capped at 200 concurrent in-flight requests.
+  - The URL is temporary: a new one is generated every time sharing
+    starts, and it stops working the moment sharing stops.
+  - Some real-world reports describe it as less consistently reliable
+    than ngrok's infrastructure — worth knowing if a share needs to
+    stay up reliably for a while.
+
+I could not test any part of this end-to-end — no network access to
+install cloudflared or observe its actual output in the environment
+that wrote this code. The URL-parsing pattern below is based on
+cloudflared's documented log format, not direct observation.
 """
 from __future__ import annotations
+
+import platform
+import re
+import shutil
+import subprocess
+import threading
+
+_TRYCLOUDFLARE_URL_PATTERN = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+
+_INSTALL_INSTRUCTIONS = {
+    "Windows": (
+        "cloudflared isn't installed. Install it (free, no account needed) with:\n"
+        "  winget install --id Cloudflare.cloudflared\n"
+        "or download it directly from:\n"
+        "  https://github.com/cloudflare/cloudflared/releases/latest\n"
+        "Restart LocalShare after installing."
+    ),
+    "Linux": (
+        "cloudflared isn't installed. Install it (free, no account needed) — see:\n"
+        "  https://pkg.cloudflare.com/index.html\n"
+        "or download the binary directly from:\n"
+        "  https://github.com/cloudflare/cloudflared/releases/latest\n"
+        "Restart LocalShare after installing."
+    ),
+    "Darwin": (
+        "cloudflared isn't installed. Install it (free, no account needed) with:\n"
+        "  brew install cloudflared\n"
+        "Restart LocalShare after installing."
+    ),
+}
 
 
 class TunnelHandle:
     def __init__(self) -> None:
         self.public_url: str | None = None
-        self._tunnel = None
+        self._process: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
 
     @property
     def is_running(self) -> bool:
-        return self._tunnel is not None
+        return self._process is not None and self._process.poll() is None
 
-    def start(self, local_port: int, authtoken: str) -> str:
+    def start(self, local_port: int, timeout: float = 30.0) -> str:
         """
-        Opens an ngrok tunnel to the given local port. Returns the
-        public HTTPS URL. Raises RuntimeError with a clear, actionable
-        message on any failure (pyngrok not installed, missing/bad
-        authtoken, no network, etc.) rather than letting a raw
-        exception surface to the GUI.
+        Launches cloudflared and waits for it to report the public
+        URL. Raises RuntimeError with a clear, actionable message if
+        cloudflared isn't installed, or if it doesn't produce a URL
+        within `timeout` seconds.
         """
         if self.is_running:
             return self.public_url  # type: ignore[return-value]
 
-        if not authtoken or not authtoken.strip():
+        cloudflared_path = shutil.which("cloudflared")
+        if not cloudflared_path:
             raise RuntimeError(
-                "An ngrok authtoken is required for internet sharing (this is ngrok's "
-                "requirement, even for their free tier). Get a free one at "
-                "https://dashboard.ngrok.com/get-started/your-authtoken and paste it in."
-            )
-
-        # A common mistake: copying the sample line from ngrok's config
-        # example ("authtoken: <your-authtoken>") instead of clicking
-        # "Show Authtoken" to reveal the real value first. Catch this
-        # instantly rather than waiting on a round-trip to ngrok's
-        # servers just to get the same answer back.
-        stripped = authtoken.strip()
-        if "<" in stripped or ">" in stripped or stripped.lower() == "your-authtoken":
-            raise RuntimeError(
-                "That looks like the placeholder text from ngrok's example config, not "
-                "your actual token. On the ngrok dashboard, click \"Show Authtoken\" first "
-                "to reveal the real value, then copy that (not the example line above it)."
+                _INSTALL_INSTRUCTIONS.get(
+                    platform.system(),
+                    "cloudflared isn't installed. Get it (free, no account needed) from:\n"
+                    "https://github.com/cloudflare/cloudflared/releases/latest",
+                )
             )
 
         try:
-            from pyngrok import ngrok
-        except ImportError as exc:
+            process = subprocess.Popen(
+                [cloudflared_path, "tunnel", "--url", f"http://localhost:{local_port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Couldn't start cloudflared: {exc}") from exc
+
+        found_url: list[str] = []
+        got_url = threading.Event()
+
+        def _read_output() -> None:
+            if process.stdout is None:
+                return
+            for line in process.stdout:
+                if not found_url:
+                    match = _TRYCLOUDFLARE_URL_PATTERN.search(line)
+                    if match:
+                        found_url.append(match.group(0))
+                        got_url.set()
+                # keep draining regardless, so the subprocess's stdout
+                # pipe never fills up and blocks cloudflared once
+                # we've stopped actively looking for the URL line
+
+        reader = threading.Thread(target=_read_output, daemon=True)
+        reader.start()
+
+        got_url.wait(timeout=timeout)
+
+        if not found_url:
+            process.terminate()
             raise RuntimeError(
-                'Internet sharing requires the "pyngrok" package. Install it with: pip install pyngrok'
-            ) from exc
+                f"cloudflared didn't report a public URL within {int(timeout)} seconds. "
+                "It may still be starting, or something's blocking outbound connections "
+                "on this network. You can sanity-check it by running the same command "
+                "directly in a terminal: cloudflared tunnel --url "
+                f"http://localhost:{local_port}"
+            )
 
-        try:
-            ngrok.set_auth_token(authtoken.strip())
-            tunnel = ngrok.connect(addr=local_port, proto="http")
-        except Exception as exc:
-            # pyngrok wraps a lot of different failure modes (bad
-            # token, no network, ngrok binary download failure) in its
-            # own exception types — surface whatever it reports rather
-            # than guessing which one happened.
-            raise RuntimeError(f"Couldn't start the internet tunnel: {exc}") from exc
-
-        self._tunnel = tunnel
-        self.public_url = tunnel.public_url
+        self._process = process
+        self._reader_thread = reader
+        self.public_url = found_url[0]
         return self.public_url
 
     def stop(self) -> None:
-        if self._tunnel is not None:
+        if self._process is not None:
             try:
-                from pyngrok import ngrok
-
-                ngrok.disconnect(self._tunnel.public_url)
+                self._process.terminate()
+                self._process.wait(timeout=5)
             except Exception:
-                pass  # best-effort — the tunnel will time out on ngrok's side regardless
-        self._tunnel = None
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+        self._process = None
+        self._reader_thread = None
         self.public_url = None

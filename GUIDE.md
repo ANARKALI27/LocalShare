@@ -48,7 +48,7 @@ type `localshare` in a terminal.
 2. **Drag a file or folder into the window** (or click "Add Files…" / "Add Folder…").
 3. **Choose a sharing mode:**
    - **Local Network Only** (default) — for people on the same Wi-Fi as you. No PIN needed, though you can turn one on.
-   - **Local Network + Internet** — for someone who isn't on your network. Requires a free ngrok account (one-time setup, see below) and **automatically requires a PIN** — you can't turn that off in this mode, since anyone with the link could otherwise reach it.
+   - **Global** — for someone who isn't on your network. Requires `cloudflared` installed (free, one-time setup, see below — no account or signup needed) and **automatically requires a PIN** — you can't turn that off in this mode, since anyone with the link could otherwise reach it.
 4. **Click "Start Sharing."** An address appears, along with a QR code. If PIN protection is on, the PIN shows on screen too — tell the other person what it is (or just send the QR code / link, which unlocks automatically).
 5. **Give that address (or QR code) to whoever you're sharing with.**
 6. **They open it in any web browser.** If a PIN is set and they typed the address by hand, they'll be asked to enter it once. They'll see everything you've shared and can download it.
@@ -60,12 +60,17 @@ type `localshare` in a terminal.
 
 ### Setting up internet sharing (one-time)
 
-1. Go to https://dashboard.ngrok.com/get-started/your-authtoken and make a free account
-2. Copy your authtoken
-3. In LocalShare, select "Local Network + Internet" mode and paste the token in
-4. That's it — it's remembered for next time
+Install `cloudflared` — no account or signup needed, unlike some
+similar tools:
+- **Windows:** `winget install --id Cloudflare.cloudflared`
+- **Linux:** see https://pkg.cloudflare.com/index.html
+- **macOS:** `brew install cloudflared`
 
-**One thing to expect:** the first time someone opens your internet link, they'll briefly see a warning page from ngrok before reaching LocalShare. That's normal ngrok behavior, not a problem with the app — they just click through.
+That's it — select "Global" mode in LocalShare and click Start Sharing.
+
+**Worth knowing:** Cloudflare's free tunnels are meant for casual/testing
+use, not guaranteed always-on reliability — fine for sharing with a
+friend, not something to depend on for anything critical.
 
 ---
 

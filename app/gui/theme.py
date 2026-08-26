@@ -83,6 +83,37 @@ QListWidget::item {{
 QListWidget::item:selected {{
     background-color: {c['selected_bg']};
 }}
+QLineEdit {{
+    background-color: {c['surface']};
+    border: 1px solid {c['border']};
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: {c['text']};
+}}
+QLineEdit:focus {{
+    border-color: {c['accent']};
+}}
+QLineEdit:disabled {{
+    color: {c['text_dim']};
+    background-color: {c['bg']};
+}}
+QComboBox {{
+    background-color: {c['surface']};
+    border: 1px solid {c['border']};
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: {c['text']};
+}}
+QComboBox:hover {{
+    border-color: {c['accent']};
+}}
+QComboBox QAbstractItemView {{
+    background-color: {c['surface']};
+    color: {c['text']};
+    border: 1px solid {c['border']};
+    selection-background-color: {c['selected_bg']};
+    outline: none;
+}}
 QPushButton {{
     background-color: {c['surface']};
     border: 1px solid {c['border']};

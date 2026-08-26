@@ -141,32 +141,45 @@ you're building an installer — see above).
 
 By default, LocalShare only works on your local network ("Local
 Network Only" mode) — that's still the right choice for most sharing
-between people on the same Wi-Fi. "Local Network + Internet" mode
-exists for when the other person genuinely isn't on your network.
+between people on the same Wi-Fi. "Global" mode exists for when the
+other person genuinely isn't on your network.
 
-**How it works:** an [ngrok](https://ngrok.com) tunnel opens an
-outbound connection from your machine to ngrok's servers and hands
-back a public HTTPS address that forwards to your local server. No
-port forwarding or router configuration needed — this works even
-behind NAT/CGNAT, since the connection is initiated from your side.
+**How it works:** [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+(`cloudflared`) opens an outbound connection from your machine to
+Cloudflare's edge network and hands back a public HTTPS address that
+forwards to your local server. No port forwarding or router
+configuration needed — this works even behind NAT/CGNAT, since the
+connection is initiated from your side. No account or signup either —
+this replaced an earlier ngrok-based version specifically to remove
+that requirement.
 
-**Setup:**
-1. Create a free ngrok account and grab your authtoken at
-   https://dashboard.ngrok.com/get-started/your-authtoken
-2. In LocalShare, select "Local Network + Internet" mode and paste
-   the authtoken in
-3. PIN protection turns on automatically and can't be turned off in
-   this mode — see Security notes above for why
-4. Start Sharing as normal; the public address appears once the
-   tunnel connects (takes a few seconds)
+**Setup (one-time):** install `cloudflared` — no account needed:
+- **Windows:** `winget install --id Cloudflare.cloudflared`, or download
+  directly from https://github.com/cloudflare/cloudflared/releases/latest
+- **Linux:** see https://pkg.cloudflare.com/index.html, or download the
+  binary directly from the same releases page
+- **macOS:** `brew install cloudflared`
 
-**Known limitations, not bugs:**
-- ngrok's free tier shows a one-time interstitial warning page to
-  first-time visitors before they reach LocalShare — this is ngrok's
-  own behavior, unrelated to this app
-- Free tier bandwidth/request limits apply (ngrok's, not LocalShare's)
-- The tunnel closes when you click Stop Sharing or close the app —
-  it's not a persistent public address
+Then in LocalShare: select "Global" mode, click Start Sharing. PIN
+protection turns on automatically and can't be turned off in this
+mode — see Security notes above for why. The public address appears
+once the tunnel connects (usually a few seconds).
+
+**Known limitations, straight from Cloudflare's own docs — not bugs:**
+- Quick Tunnels are explicitly labeled "for testing and development,
+  not production," and capped at 200 concurrent in-flight requests
+- The public address is temporary — a new one generates every time
+  you start sharing, and it stops working the moment you stop
+- Some real-world reports describe Quick Tunnels as less consistently
+  reliable than paid tunnel infrastructure — worth knowing if a share
+  needs to stay up reliably for a while
+
+**Testing honesty note:** I could not test the actual `cloudflared`
+subprocess integration against a real installation — no network
+access to install it in the environment that wrote this code. The
+logic was tested against simulated `cloudflared` output matching its
+documented log format (success, timeout, and missing-binary cases all
+verified), but the real thing running for real is unconfirmed.
 
 ## Accessing from a phone / other device
 
@@ -211,5 +224,5 @@ localshare/
   of your PIN setting elsewhere. Don't rely on WebDAV for anything
   you wouldn't want fully public on your LAN.
 - "Local Network Only" mode (the default) is LAN-only, same as
-  always. "Local Network + Internet" mode uses an ngrok tunnel — see
+  always. "Global" mode uses a Cloudflare Quick Tunnel — see
   the Internet Sharing section below.

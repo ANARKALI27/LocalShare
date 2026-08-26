@@ -133,24 +133,23 @@ class _UpdateDownloadWorker(QThread):
 
 class _TunnelStartWorker(QThread):
     """
-    Starts the ngrok tunnel off the GUI thread — ngrok.connect() does
-    real network I/O (downloading the ngrok binary on first use,
-    establishing the tunnel), which would freeze the window if run
-    directly on the main thread.
+    Starts the cloudflared tunnel off the GUI thread — launching the
+    subprocess and waiting for it to report its public URL takes a
+    few seconds, which would freeze the window if run directly on the
+    main thread.
     """
 
     finished_ok = Signal(str)  # public_url
     finished_error = Signal(str)  # error message
 
-    def __init__(self, tunnel_handle: TunnelHandle, local_port: int, authtoken: str) -> None:
+    def __init__(self, tunnel_handle: TunnelHandle, local_port: int) -> None:
         super().__init__()
         self._handle = tunnel_handle
         self._local_port = local_port
-        self._authtoken = authtoken
 
     def run(self) -> None:
         try:
-            public_url = self._handle.start(self._local_port, self._authtoken)
+            public_url = self._handle.start(self._local_port)
             self.finished_ok.emit(public_url)
         except RuntimeError as exc:
             self.finished_error.emit(str(exc))
@@ -167,7 +166,13 @@ class MainWindow(QMainWindow):
         self._is_dark = True
         self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
         self.theme_colors = self._current_base_colors()
-        self.setStyleSheet(build_stylesheet(self.theme_colors))
+        # Applied at the QApplication level, not just this window — a
+        # per-widget stylesheet doesn't reliably cascade to separate
+        # top-level windows (QDialog, QMessageBox), which was leaving
+        # the Settings dialog and popups rendering unstyled/white
+        # against the app's dark theme. The application level is what
+        # Qt actually guarantees reaches every window.
+        QApplication.instance().setStyleSheet(build_stylesheet(self.theme_colors))
 
         self.share_manager = ShareManager()
         self.share_manager.on_change(self._refresh_shared_list)
@@ -254,7 +259,9 @@ class MainWindow(QMainWindow):
         self.gradient_bg_checkbox.toggled.connect(self.gradient_background.set_animated)
         self.gradient_bg_checkbox.toggled.connect(self.gradient_style_combo.setEnabled)
 
-        self._build_settings_dialog()
+        # _build_settings_dialog() is called at the end of _build_ui(),
+        # once every widget it references (including the auto-update
+        # checkbox, created further down) actually exists.
 
         # Drop zone
         self.drop_zone = DropZone()
@@ -324,16 +331,10 @@ class MainWindow(QMainWindow):
         )
         root.addWidget(self.mode_indicator_label)
 
-        self.ngrok_token_input = QLineEdit()
-        self.ngrok_token_input.setPlaceholderText(
-            "ngrok authtoken — free at dashboard.ngrok.com/get-started/your-authtoken"
-        )
-        self.ngrok_token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        saved_ngrok_token = QSettings("LocalShare", "LocalShare").value("ngrok_authtoken", "")
-        if saved_ngrok_token:
-            self.ngrok_token_input.setText(saved_ngrok_token)
-        self.ngrok_token_input.hide()
-        root.addWidget(self.ngrok_token_input)
+        # No token/signup field here — Cloudflare Quick Tunnel (unlike
+        # the ngrok version this replaced) needs no account, just the
+        # "cloudflared" program installed and on PATH. start() in
+        # tunnel.py gives clear install instructions if it's missing.
 
         self.tunnel_status_label = QLabel("")
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
@@ -464,7 +465,8 @@ class MainWindow(QMainWindow):
                 "auto_check_updates", checked
             )
         )
-        root.addWidget(self.auto_check_updates_checkbox)
+        # Lives in the Settings dialog (built below), not directly in
+        # the main window — same consolidation as theme/accent/gradient.
 
         self.credit_label = QLabel("Developed by ANARKALI")
         self.credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -472,6 +474,8 @@ class MainWindow(QMainWindow):
             f"color: {self.theme_colors['text_dim']}; font-size: 11px; letter-spacing: 0.5px;"
         )
         root.addWidget(self.credit_label)
+
+        self._build_settings_dialog()
 
     # -- drop / browse handlers -----------------------------------------------------------
     def _on_paths_dropped(self, paths: list[str]) -> None:
@@ -556,18 +560,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.internet_radio.isChecked():
-            authtoken = self.ngrok_token_input.text().strip()
-            if not authtoken:
-                QMessageBox.information(
-                    self,
-                    "ngrok authtoken required",
-                    "Internet sharing needs a free ngrok authtoken. Get one at\n"
-                    "dashboard.ngrok.com/get-started/your-authtoken and paste it in "
-                    "before starting.",
-                )
-                return
-            QSettings("LocalShare", "LocalShare").setValue("ngrok_authtoken", authtoken)
+        # No token/signup validation needed for Global mode anymore —
+        # Cloudflare Quick Tunnel just needs "cloudflared" installed,
+        # which tunnel.py checks for when the tunnel actually starts
+        # and reports clearly if it's missing.
 
         # Configure PIN protection BEFORE the server starts, so the
         # very first request it ever serves is already covered — not
@@ -616,7 +612,6 @@ class MainWindow(QMainWindow):
         self.internet_radio.setEnabled(False)
         self.pin_checkbox.setEnabled(False)
         self.custom_pin_input.setEnabled(False)
-        self.ngrok_token_input.setEnabled(False)
 
         if self.internet_radio.isChecked():
             # Don't show the LAN address/QR yet — it will NOT work for
@@ -635,12 +630,11 @@ class MainWindow(QMainWindow):
 
     def _start_tunnel(self) -> None:
         port = self.server_handle.port
-        authtoken = self.ngrok_token_input.text().strip()
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        self.tunnel_status_label.setText("Starting internet tunnel…")
+        self.tunnel_status_label.setText("Starting internet tunnel (cloudflared)…")
         self.tunnel_status_label.show()
 
-        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port, authtoken)
+        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port)
         self._tunnel_worker.finished_ok.connect(self._on_tunnel_started)
         self._tunnel_worker.finished_error.connect(self._on_tunnel_failed)
         self._tunnel_worker.start()
@@ -648,10 +642,7 @@ class MainWindow(QMainWindow):
     def _on_tunnel_started(self, public_url: str) -> None:
         share_url = self._build_share_url(public_url)
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        self.tunnel_status_label.setText(
-            f"Internet address: {share_url}\n"
-            f"(First-time visitors may see a one-time ngrok warning page — that's normal.)"
-        )
+        self.tunnel_status_label.setText(f"Internet address: {share_url}")
         self.address_label.setText(f"Address: {share_url}")
         self._show_qr_code(share_url)
 
@@ -676,8 +667,6 @@ class MainWindow(QMainWindow):
         )
 
     def _on_mode_changed(self, internet_checked: bool) -> None:
-        self.ngrok_token_input.setVisible(internet_checked)
-
         if internet_checked:
             self.mode_indicator_label.setText("● Global selected")
             # Internet exposure without a PIN is a real risk (see
@@ -796,7 +785,6 @@ class MainWindow(QMainWindow):
         self.internet_radio.setEnabled(True)
         self.pin_checkbox.setEnabled(True)
         self.custom_pin_input.setEnabled(True)
-        self.ngrok_token_input.setEnabled(True)
         self._local_address = None
 
     def _copy_address(self) -> None:
@@ -840,7 +828,7 @@ class MainWindow(QMainWindow):
             colors["accent_hover"] = self._compute_hover_color(self._custom_accent)
         self.theme_colors = colors
 
-        self.setStyleSheet(build_stylesheet(colors))
+        QApplication.instance().setStyleSheet(build_stylesheet(colors))
         self.drop_zone.set_theme(colors)
         self.theme_toggle_btn.setText("☀️ Light" if self._is_dark else "🌙 Dark")
 
@@ -927,6 +915,11 @@ class MainWindow(QMainWindow):
         gradient_style_row.addWidget(self.gradient_style_combo)
         layout.addLayout(gradient_style_row)
 
+        updates_label = QLabel("UPDATES")
+        updates_label.setObjectName("SectionLabel")
+        layout.addWidget(updates_label)
+        layout.addWidget(self.auto_check_updates_checkbox)
+
         close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn)
@@ -935,6 +928,9 @@ class MainWindow(QMainWindow):
         self._settings_close_btn = close_btn  # kept for theme/glow-color refresh
 
     def _open_settings_dialog(self) -> None:
+        # No per-dialog stylesheet patch needed anymore — styling is
+        # applied at the QApplication level (see __init__/_apply_theme),
+        # which Qt reliably cascades to every window including this one.
         self.settings_dialog.exec()
 
     def _check_for_updates(self) -> None:
