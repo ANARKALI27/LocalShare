@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
 
         self._is_dark = True
         self._custom_accent: str | None = None  # hex string, e.g. "#FF8A3D" — None means use the theme default
+        self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
         self.theme_colors = self._current_base_colors()
         # Applied at the QApplication level, not just this window — a
         # per-widget stylesheet doesn't reliably cascade to separate
@@ -683,6 +684,11 @@ class MainWindow(QMainWindow):
             self.pin_mandatory_label.hide()
             self.pin_checkbox.show()
             self.pin_checkbox.setEnabled(True)
+            # Restore YOUR actual choice for Local mode, rather than
+            # leaving the checkbox stuck on the True that Global mode
+            # forced — that forced value was never something you
+            # picked, so it shouldn't linger after leaving that mode.
+            self.pin_checkbox.setChecked(self._local_pin_preference)
             self.custom_pin_input.setVisible(self.pin_checkbox.isChecked())
             self.tunnel_status_label.hide()
 
@@ -690,6 +696,14 @@ class MainWindow(QMainWindow):
         self.custom_pin_input.setVisible(checked)
         if not checked:
             self.pin_display_label.hide()
+        # Only remember this as your actual Local-mode preference when
+        # it's genuinely your action — the checkbox is only interactive
+        # in Local mode; in Global mode we force it via setChecked()
+        # ourselves (see _on_mode_changed above), and without this
+        # guard that forced change would incorrectly overwrite your
+        # real preference.
+        if not self.internet_radio.isChecked():
+            self._local_pin_preference = checked
 
     def _show_qr_code(self, address: str) -> None:
         pixmap = generate_qr_pixmap(address)
