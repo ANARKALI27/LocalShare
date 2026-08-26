@@ -639,6 +639,16 @@ class MainWindow(QMainWindow):
         """
         if self.server_handle.is_running:
             return
+        if self._start_worker is not None and self._start_worker.isRunning():
+            # A start is already in progress (this genuinely happens at
+            # launch: "auto-resume shares" can trigger "auto-start on
+            # add" at nearly the same moment "auto-start on launch"
+            # fires separately). Without this guard, a second call here
+            # would overwrite self._start_worker while the first
+            # QThread is still running — its only Python reference
+            # gone, Qt destroys it mid-flight, which is exactly the
+            # "QThread: Destroyed while thread is still running" crash.
+            return
 
         # No token/signup validation needed for Global mode anymore —
         # Cloudflare Quick Tunnel just needs "cloudflared" installed,
