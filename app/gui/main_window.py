@@ -1099,6 +1099,41 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         QSettings("LocalShare", "LocalShare").setValue("custom_accent", color.name())
 
+    def _delete_current_theme(self) -> None:
+        name = self._current_theme_name
+        if name not in self._custom_themes:
+            QMessageBox.information(
+                self,
+                "Can't delete this theme",
+                f'"{name}" is a built-in theme and can\'t be deleted — only custom themes '
+                f"you've created or imported can be removed.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete theme?",
+            f'Delete "{name}"? This can\'t be undone.',
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        del self._custom_themes[name]
+        self._save_custom_themes()
+
+        index = self.theme_combo.findText(name)
+        if index >= 0:
+            # Removing the currently-selected item moves the combo's
+            # selection to another entry automatically, which fires
+            # _on_theme_selected and applies the new theme as a side
+            # effect. The explicit fallback below just guards against
+            # that not happening, since I can't verify this live.
+            self.theme_combo.removeItem(index)
+        if self._current_theme_name == name:
+            self.theme_combo.setCurrentText("Default Dark")
+
     def _open_custom_theme_dialog(self) -> None:
         dialog = CustomThemeDialog(self.theme_colors, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1243,16 +1278,19 @@ class MainWindow(QMainWindow):
         theme_actions_row = QHBoxLayout()
         create_theme_btn = HoverGlowButton("+ Create Theme", glow_color=self.theme_colors["accent"])
         create_theme_btn.clicked.connect(self._open_custom_theme_dialog)
+        delete_theme_btn = HoverGlowButton("🗑 Delete", glow_color=self.theme_colors["accent"])
+        delete_theme_btn.clicked.connect(self._delete_current_theme)
         export_theme_btn = HoverGlowButton("Export…", glow_color=self.theme_colors["accent"])
         export_theme_btn.clicked.connect(self._export_current_theme)
         import_theme_btn = HoverGlowButton("Import…", glow_color=self.theme_colors["accent"])
         import_theme_btn.clicked.connect(self._import_theme)
         theme_actions_row.addWidget(create_theme_btn)
+        theme_actions_row.addWidget(delete_theme_btn)
         theme_actions_row.addStretch()
         theme_actions_row.addWidget(export_theme_btn)
         theme_actions_row.addWidget(import_theme_btn)
         layout.addLayout(theme_actions_row)
-        self._theme_action_buttons = [create_theme_btn, export_theme_btn, import_theme_btn]
+        self._theme_action_buttons = [create_theme_btn, delete_theme_btn, export_theme_btn, import_theme_btn]
 
         accent_swatch_row = QHBoxLayout()
         accent_swatch_row.addWidget(QLabel("Accent color"))
