@@ -30,11 +30,16 @@ from PySide6.QtWidgets import QWidget
 
 from app.gui.background_layout_math import compute_image_placement
 
-STYLES = ["Sweep", "Pulse", "Aurora"]
+STYLES = ["Sweep", "Pulse", "Aurora", "Mesh", "Fluid", "Snow", "Rain", "Fire"]
+PARTICLE_STYLES = ["Snow", "Rain", "Fire"]
 MODES = ["solid", "gradient", "image", "video"]
 
 
 class AnimatedGradientBackground(QWidget):
+    _SNOW_COUNT = 45
+    _RAIN_COUNT = 60
+    _FIRE_COUNT = 35
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._bg_color = QColor("#1E1F26")
@@ -64,8 +69,34 @@ class AnimatedGradientBackground(QWidget):
         self._video_error: str | None = None
 
         self._timer = QTimer(self)
-        self._timer.setInterval(50)  # ~20fps — smooth enough, light on CPU
+        self._timer.setInterval(50)  # ~20fps default (Balanced) — see set_performance_mode()
         self._timer.timeout.connect(self.update)
+        self._reduce_motion = False
+
+    # -- performance / reduce motion -----------------------------------------------------------
+
+    def set_performance_mode(self, mode: str) -> None:
+        """Adjusts the animated-background frame rate. Quality/Balanced/
+        Performance trade smoothness for lighter CPU/GPU use — a real,
+        directly-controlled effect, not just a label."""
+        intervals = {"Quality": 33, "Balanced": 50, "Performance": 100}  # ms per frame: ~30/20/10fps
+        self._timer.setInterval(intervals.get(mode, 50))
+
+    def set_reduce_motion(self, enabled: bool) -> None:
+        """Freezes whatever's currently animating (gradient timer,
+        video playback) without changing the selected background mode
+        — reduce motion is about removing movement, not switching away
+        from the look someone chose."""
+        self._reduce_motion = enabled
+        if enabled:
+            self._timer.stop()
+            if self._video_player is not None:
+                self._video_player.pause()
+        else:
+            if self._mode == "gradient":
+                self._timer.start()
+            elif self._mode == "video" and self._video_player is not None and self._video_autoplay:
+                self._video_player.play()
 
     # -- mode / solid / gradient (unchanged behavior from before) -----------------
 
@@ -78,14 +109,14 @@ class AnimatedGradientBackground(QWidget):
         if mode not in MODES:
             return
         self._mode = mode
-        if mode == "gradient":
+        if mode == "gradient" and not self._reduce_motion:
             self._start_time = time.monotonic()
             self._timer.start()
         else:
             self._timer.stop()
         if mode == "video":
             self._ensure_video_player()
-            if self._video_player is not None and self._video_autoplay:
+            if self._video_player is not None and self._video_autoplay and not self._reduce_motion:
                 self._video_player.play()
         elif self._video_player is not None:
             self._video_player.pause()
@@ -211,13 +242,20 @@ class AnimatedGradientBackground(QWidget):
 
     def pause_for_minimize(self) -> None:
         """Called when the window is minimized — pauses video decoding
-        so it doesn't burn CPU/GPU while nothing is visible."""
+        and gradient animation so neither burns CPU/GPU while nothing
+        is visible."""
         if self._video_player is not None and self._mode == "video":
             self._video_player.pause()
+        if self._mode == "gradient":
+            self._timer.stop()
 
     def resume_from_minimize(self) -> None:
+        if self._reduce_motion:
+            return  # stays paused either way if reduce motion is on
         if self._video_player is not None and self._mode == "video" and self._video_autoplay:
             self._video_player.play()
+        if self._mode == "gradient":
+            self._timer.start()
 
     # -- painting -----------------------------------------------------------
 
@@ -247,6 +285,16 @@ class AnimatedGradientBackground(QWidget):
             self._paint_pulse(painter, w, h, elapsed)
         elif self._style == "Aurora":
             self._paint_aurora(painter, w, h, elapsed)
+        elif self._style == "Mesh":
+            self._paint_mesh(painter, w, h, elapsed)
+        elif self._style == "Fluid":
+            self._paint_fluid(painter, w, h, elapsed)
+        elif self._style == "Snow":
+            self._paint_snow(painter, w, h, elapsed)
+        elif self._style == "Rain":
+            self._paint_rain(painter, w, h, elapsed)
+        elif self._style == "Fire":
+            self._paint_fire(painter, w, h, elapsed)
         else:
             self._paint_sweep(painter, w, h, elapsed)
 
@@ -349,3 +397,126 @@ class AnimatedGradientBackground(QWidget):
 
             painter.setBrush(gradient)
             painter.drawEllipse(QPointF(cx, cy), blob_radius, blob_radius)
+
+    def _paint_mesh(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """A 'mesh gradient' look: blobs at FIXED grid anchor points
+        (unlike Aurora's drifting blobs) that gently pulse in size and
+        opacity — a more structured, geometric feel than Aurora's
+        organic drift."""
+        painter.fillRect(self.rect(), self._bg_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        # 5 anchor points: 4 corners-ish + center, normalized 0..1
+        anchors = [
+            (0.2, 0.25, 0.0), (0.8, 0.2, 1.3), (0.5, 0.5, 2.6),
+            (0.2, 0.8, 3.9), (0.8, 0.8, 5.2),
+        ]
+        radius = math.hypot(w, h) * 0.28
+
+        for ax, ay, phase in anchors:
+            pulse = 0.5 + 0.5 * math.sin(elapsed * 0.5 + phase)
+            cx, cy = ax * w, ay * h
+            r = radius * (0.7 + 0.3 * pulse)
+
+            gradient = QRadialGradient(QPointF(cx, cy), max(r, 1.0))
+            core = QColor(self._accent_color)
+            core.setAlpha(int(40 * (0.5 + 0.5 * pulse)))
+            edge = QColor(self._accent_color)
+            edge.setAlpha(0)
+            gradient.setColorAt(0.0, core)
+            gradient.setColorAt(1.0, edge)
+
+            painter.setBrush(gradient)
+            painter.drawEllipse(QPointF(cx, cy), r, r)
+
+    def _paint_fluid(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """Two large, slow-moving overlapping blobs on smooth circular
+        paths — a liquid/lava-lamp feel, distinct from Aurora's several
+        smaller, faster-drifting blobs."""
+        painter.fillRect(self.rect(), self._bg_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        blob_radius = math.hypot(w, h) * 0.42
+        blobs = [(0.0, 26.0), (math.pi, 34.0)]  # (phase offset, period in seconds)
+
+        for phase, period in blobs:
+            t = (elapsed / period) * 2 * math.pi + phase
+            cx = w / 2 + math.cos(t) * w * 0.22
+            cy = h / 2 + math.sin(t * 0.7) * h * 0.22
+
+            gradient = QRadialGradient(QPointF(cx, cy), max(blob_radius, 1.0))
+            core = QColor(self._accent_color)
+            core.setAlpha(38)
+            edge = QColor(self._accent_color)
+            edge.setAlpha(0)
+            gradient.setColorAt(0.0, core)
+            gradient.setColorAt(1.0, edge)
+
+            painter.setBrush(gradient)
+            painter.drawEllipse(QPointF(cx, cy), blob_radius, blob_radius)
+
+    def _paint_snow(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """Small pale particles drifting slowly downward, looping from
+        top to bottom, with a gentle horizontal sway."""
+        painter.fillRect(self.rect(), self._bg_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        for i in range(self._SNOW_COUNT):
+            phase = (i / self._SNOW_COUNT)
+            fall_speed = 18 + (i % 5) * 6  # px/sec, varied per-particle for a natural look
+            y = (elapsed * fall_speed + phase * h) % h
+            drift = math.sin(elapsed * 0.6 + i) * 12
+            x = (phase * w + drift) % w
+            size = 1.8 + (i % 4) * 0.7
+
+            color = QColor(255, 255, 255)
+            color.setAlphaF(0.55)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(x, y), size, size)
+
+    def _paint_rain(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """Thin diagonal streaks falling fast, looping from top to
+        bottom — same looping mechanism as snow, faster and drawn as
+        short lines instead of dots."""
+        painter.fillRect(self.rect(), self._bg_color)
+
+        pen_color = QColor(self._accent_color).lighter(140)
+        pen_color.setAlphaF(0.35)
+        painter.setPen(pen_color)
+
+        for i in range(self._RAIN_COUNT):
+            phase = i / self._RAIN_COUNT
+            fall_speed = 340 + (i % 7) * 30
+            y = (elapsed * fall_speed + phase * h) % h
+            x = (phase * w * 1.3) % w  # wider spread than h so streaks don't visibly repeat in lockstep
+            length = 14 + (i % 3) * 4
+            # a slight diagonal lean, consistent direction for all drops
+            painter.drawLine(QPointF(x, y), QPointF(x - length * 0.25, y - length))
+
+    def _paint_fire(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """Warm particles rising from the bottom edge, fading out as
+        they climb — embers/flicker, confined to the lower portion of
+        the widget rather than filling the whole background."""
+        painter.fillRect(self.rect(), self._bg_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        fire_band_h = h * 0.6  # particles only rise through the bottom 60%
+
+        for i in range(self._FIRE_COUNT):
+            phase = i / self._FIRE_COUNT
+            rise_speed = 40 + (i % 5) * 10
+            risen = (elapsed * rise_speed + phase * fire_band_h) % fire_band_h
+            y = h - risen
+            sway = math.sin(elapsed * 1.4 + i * 1.7) * 8
+            x = (phase * w + sway) % w
+            size = 2.0 + (i % 3) * 1.2
+
+            # hotter/brighter near the bottom, fading toward the top of its rise
+            fade = max(0.0, min(1.0, risen / fire_band_h))
+            alpha = 1.0 - fade
+            color = QColor(255, int(140 - 60 * fade), int(30 * (1 - fade)))
+            color.setAlphaF(max(0.0, alpha) * 0.8)
+
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(x, y), size, size)
+

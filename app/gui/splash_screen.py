@@ -1,6 +1,12 @@
 """
 Splash screen shown briefly when the app starts: "LocalShare" with a
 sparkle/glitter animation and a "Developed By ANARKALI" credit line.
+
+The window itself is genuinely transparent (desktop shows through
+outside the rounded panel) rather than a solid rectangle — only the
+rounded panel area is filled, so it reads as a floating card rather
+than a plain opaque box. Entrance uses a combined fade + scale-in
+transition; exit is a plain fade-out, unchanged from before.
 """
 from __future__ import annotations
 
@@ -8,8 +14,8 @@ import math
 import random
 import time
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QRadialGradient
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QRadialGradient
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
 
 from app.gui.theme import DARK
@@ -37,9 +43,10 @@ class _Sparkle:
 
 class SplashScreen(QWidget):
     """
-    A frameless, centered window that shows a sparkle animation behind
-    the title/subtitle, fades in, holds, fades out, then emits
-    `finished` so the caller can show the real MainWindow.
+    A frameless, transparent, centered window that shows a sparkle
+    animation behind the title/subtitle on a rounded panel, fades +
+    scales in, holds, fades out, then emits `finished` so the caller
+    can show the real MainWindow.
     """
 
     finished = Signal()
@@ -49,11 +56,17 @@ class SplashScreen(QWidget):
     def __init__(self, hold_ms: int = 1400, fade_ms: int = 500) -> None:
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        # Makes the window's own background genuinely transparent — only
+        # what paintEvent actually draws (the rounded panel + sparkles)
+        # is visible; everything else shows the desktop through.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.resize(420, 260)
 
-        self._bg_color = QColor(DARK["bg"])
+        self._panel_color = QColor(DARK["bg"])
+        self._panel_color.setAlphaF(0.92)  # slightly translucent panel, not fully opaque
         self._sparkles = [_Sparkle() for _ in range(self.SPARKLE_COUNT)]
         self._start_time = time.monotonic()
+        self._scale = 0.92  # entrance starts slightly zoomed-out, animates to 1.0
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -87,6 +100,15 @@ class SplashScreen(QWidget):
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
 
+        # Scale-in runs alongside the fade — a small "pop" on entrance,
+        # driven by a plain QTimer since QPropertyAnimation can't target
+        # a bare Python attribute directly without a QObject property.
+        self._scale_start_time = time.monotonic()
+        self._scale_duration = fade_ms / 1000.0
+        self._scale_timer = QTimer(self)
+        self._scale_timer.setInterval(16)  # ~60fps — this is a short, one-shot entrance effect
+        self._scale_timer.timeout.connect(self._advance_scale)
+
         self._hold_ms = hold_ms
         self._fade_ms = fade_ms
         self._fade_out_anim: QPropertyAnimation | None = None
@@ -101,19 +123,45 @@ class SplashScreen(QWidget):
         self.show()
         self._fade_in.start()
         self._sparkle_timer.start()
+        self._scale_start_time = time.monotonic()
+        self._scale_timer.start()
         QTimer.singleShot(self._fade_ms + self._hold_ms, self._fade_out)
+
+    def _advance_scale(self) -> None:
+        t = (time.monotonic() - self._scale_start_time) / max(self._scale_duration, 0.001)
+        if t >= 1.0:
+            self._scale = 1.0
+            self._scale_timer.stop()
+        else:
+            # ease-out cubic, matching the fade's easing curve so both
+            # transitions finish in visual sync
+            eased = 1 - (1 - t) ** 3
+            self._scale = 0.92 + 0.08 * eased
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Fill the background explicitly rather than relying on a QSS
-        # background-color, since overriding paintEvent on a plain
-        # QWidget bypasses the stylesheet's automatic background fill.
-        painter.fillRect(self.rect(), self._bg_color)
+        w, h = self.width(), self.height()
+
+        # Scale around the center for the entrance "pop" — everything
+        # below is drawn in this transformed space.
+        painter.translate(w / 2, h / 2)
+        painter.scale(self._scale, self._scale)
+        painter.translate(-w / 2, -h / 2)
+
+        # Rounded panel, not a plain rect — this is what makes the
+        # transparency actually visible (desktop shows through the
+        # corners/margins outside this shape) rather than just being a
+        # technically-transparent-but-visually-identical solid window.
+        panel_rect = QRectF(0, 0, w, h)
+        path = QPainterPath()
+        path.addRoundedRect(panel_rect, 22, 22)
+        painter.fillPath(path, self._panel_color)
+        painter.setClipPath(path)  # keep sparkles confined to the panel shape
 
         elapsed = time.monotonic() - self._start_time
-        w, h = self.width(), self.height()
 
         painter.setPen(Qt.PenStyle.NoPen)
         for sp in self._sparkles:
@@ -161,3 +209,4 @@ class SplashScreen(QWidget):
             geo.center().x() - self.width() // 2,
             geo.center().y() - self.height() // 2,
         )
+

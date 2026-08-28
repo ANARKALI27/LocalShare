@@ -44,6 +44,7 @@ from app.gui.drop_zone import DropZone
 from app.gui.gradient_background import AnimatedGradientBackground, STYLES
 from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
+import app.gui.hover_button as hover_button_module
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import ACCENT_PRESETS, FULL_KEYS, THEMES, build_stylesheet, theme_to_json, theme_from_json
 from app.paths import ICON_PATH
@@ -1173,6 +1174,15 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         QSettings("LocalShare", "LocalShare").setValue("custom_accent", color.name())
 
+    def _on_reduce_motion_toggled(self, enabled: bool) -> None:
+        self.gradient_background.set_reduce_motion(enabled)
+        hover_button_module.ANIMATION_DURATION_MS = 0 if enabled else 180
+        QSettings("LocalShare", "LocalShare").setValue("reduce_motion", enabled)
+
+    def _set_performance_mode(self, mode: str) -> None:
+        self.gradient_background.set_performance_mode(mode)
+        QSettings("LocalShare", "LocalShare").setValue("performance_mode", mode)
+
     def _set_background_mode(self, mode: str) -> None:
         self.gradient_background.set_mode(mode)
         QSettings("LocalShare", "LocalShare").setValue("background_mode", mode)
@@ -1549,6 +1559,54 @@ class MainWindow(QMainWindow):
         layout.addWidget(updates_label)
         layout.addWidget(self.auto_check_updates_checkbox)
 
+        motion_label = QLabel("MOTION")
+        motion_label.setObjectName("SectionLabel")
+        layout.addWidget(motion_label)
+
+        _motion_settings = QSettings("LocalShare", "LocalShare")
+        _persisted_reduce_motion = _motion_settings.value("reduce_motion", False, type=bool)
+        _persisted_performance_mode = _motion_settings.value("performance_mode", "Balanced")
+        if _persisted_performance_mode not in ("Quality", "Balanced", "Performance"):
+            _persisted_performance_mode = "Balanced"
+
+        self.reduce_motion_checkbox = QCheckBox("Reduce Motion")
+        self.reduce_motion_checkbox.setToolTip(
+            "Freezes animated backgrounds and speeds up hover effects to instant, "
+            "without changing your chosen theme or background."
+        )
+        self.reduce_motion_checkbox.setChecked(_persisted_reduce_motion)
+        self.reduce_motion_checkbox.toggled.connect(self._on_reduce_motion_toggled)
+        layout.addWidget(self.reduce_motion_checkbox)
+
+        performance_label = QLabel("PERFORMANCE")
+        performance_label.setObjectName("SectionLabel")
+        layout.addWidget(performance_label)
+
+        self.performance_mode_group = QButtonGroup(self)
+        self.perf_quality_radio = QRadioButton("Quality")
+        self.perf_balanced_radio = QRadioButton("Balanced")
+        self.perf_performance_radio = QRadioButton("Performance")
+        for btn in (self.perf_quality_radio, self.perf_balanced_radio, self.perf_performance_radio):
+            self.performance_mode_group.addButton(btn)
+        {"Quality": self.perf_quality_radio, "Balanced": self.perf_balanced_radio,
+         "Performance": self.perf_performance_radio}[_persisted_performance_mode].setChecked(True)
+        self.perf_quality_radio.toggled.connect(lambda c: c and self._set_performance_mode("Quality"))
+        self.perf_balanced_radio.toggled.connect(lambda c: c and self._set_performance_mode("Balanced"))
+        self.perf_performance_radio.toggled.connect(lambda c: c and self._set_performance_mode("Performance"))
+        perf_row = QHBoxLayout()
+        perf_row.addWidget(self.perf_quality_radio)
+        perf_row.addWidget(self.perf_balanced_radio)
+        perf_row.addWidget(self.perf_performance_radio)
+        layout.addLayout(perf_row)
+
+        # Apply restored state now — the toggled signals above only
+        # fire on a genuine state *change*, which won't happen just
+        # from setChecked() during construction if the widget already
+        # defaulted to that value.
+        self.gradient_background.set_performance_mode(_persisted_performance_mode)
+        self.gradient_background.set_reduce_motion(_persisted_reduce_motion)
+        hover_button_module.ANIMATION_DURATION_MS = 0 if _persisted_reduce_motion else 180
+
         about_label = QLabel("ABOUT")
         about_label.setObjectName("SectionLabel")
         layout.addWidget(about_label)
@@ -1723,6 +1781,17 @@ class MainWindow(QMainWindow):
             "can update cleanly — reopen it once installation finishes.",
         )
         QApplication.instance().quit()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
+        """Pauses animated/video backgrounds while minimized (nothing is
+        visible, so decoding frames just burns CPU/GPU for no reason),
+        resumes when restored."""
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized():
+                self.gradient_background.pause_for_minimize()
+            else:
+                self.gradient_background.resume_from_minimize()
+        super().changeEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         if self.server_handle.is_running:
