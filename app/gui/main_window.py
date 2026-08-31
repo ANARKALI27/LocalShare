@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import tempfile
 
-from PySide6.QtCore import QEvent, Qt, QSettings, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QSettings, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,7 +24,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsBlurEffect,
     QGraphicsDropShadowEffect,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -37,6 +41,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -457,6 +462,17 @@ class MainWindow(QMainWindow):
         self.transparency_slider.sliderReleased.connect(
             lambda: self._set_surface_alpha(self.transparency_slider.value())
         )
+
+        # -- glass effect: experimental, see _refresh_glass_backdrop() --
+        _persisted_glass_effect = QSettings("LocalShare", "LocalShare").value("glass_effect", "Off")
+        if _persisted_glass_effect not in ("Off", "Subtle", "Medium", "Strong"):
+            _persisted_glass_effect = "Off"
+        self.glass_effect_combo = QComboBox()
+        self.glass_effect_combo.addItems(["Off", "Subtle", "Medium", "Strong"])
+        self.glass_effect_combo.setCurrentText(_persisted_glass_effect)
+        self.glass_effect_combo.currentTextChanged.connect(self._set_glass_effect)
+        self._glass_effect = _persisted_glass_effect
+        self._glass_temp_path = os.path.join(tempfile.gettempdir(), "localshare_glass_backdrop.png")
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -1217,6 +1233,9 @@ class MainWindow(QMainWindow):
         else:
             self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
 
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
+
     def _set_card_radius(self, value: str) -> None:
         self._card_radius = value
         QSettings("LocalShare", "LocalShare").setValue("card_radius", value)
@@ -1238,6 +1257,76 @@ class MainWindow(QMainWindow):
         self._surface_alpha = slider_value / 100.0
         QSettings("LocalShare", "LocalShare").setValue("surface_alpha", self._surface_alpha)
         self._apply_theme()
+
+    def _set_glass_effect(self, value: str) -> None:
+        self._glass_effect = value
+        QSettings("LocalShare", "LocalShare").setValue("glass_effect", value)
+        self._refresh_glass_backdrop()
+
+    def _refresh_glass_backdrop(self) -> None:
+        """
+        Experimental: blurs a SNAPSHOT of whatever's currently behind
+        the shared items list and uses it as that list's background —
+        an approximation of glassmorphism, since Qt Widgets has no
+        native support for blurring what's actually behind a
+        translucent panel. Refreshed on resize/theme/background-setting
+        changes, NOT continuously per animation frame (that would mean
+        re-capturing and re-blurring a region many times a second,
+        which is expensive and risky) — so with an animated background
+        (Gradient/Video), this will look like a still, slightly stale
+        blur rather than a genuinely live one. Any failure along the
+        way (capture, blur, file write) falls back to the normal flat
+        card background rather than leaving something broken on screen.
+        """
+        blur_radii = {"Off": 0, "Subtle": 8, "Medium": 16, "Strong": 28}
+        radius = blur_radii.get(getattr(self, "_glass_effect", "Off"), 0)
+
+        if radius == 0 or not hasattr(self, "shared_list"):
+            if hasattr(self, "shared_list"):
+                self.shared_list.setStyleSheet("")  # revert to normal QSS-driven card styling
+            return
+
+        try:
+            offset = self.shared_list.mapTo(self.gradient_background, QPoint(0, 0))
+            size = self.shared_list.size()
+            if size.width() <= 0 or size.height() <= 0:
+                return
+
+            snapshot = self.gradient_background.grab(QRect(offset, size))
+            if snapshot.isNull():
+                self.shared_list.setStyleSheet("")
+                return
+
+            scene = QGraphicsScene()
+            item = QGraphicsPixmapItem(snapshot)
+            blur = QGraphicsBlurEffect()
+            blur.setBlurRadius(radius)
+            item.setGraphicsEffect(blur)
+            scene.addItem(item)
+
+            blurred = QPixmap(snapshot.size())
+            blurred.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(blurred)
+            scene.render(painter, target=QRectF(blurred.rect()), source=QRectF(snapshot.rect()))
+            painter.end()
+
+            if not blurred.save(self._glass_temp_path, "PNG"):
+                self.shared_list.setStyleSheet("")
+                return
+
+            radius_px = CARD_RADIUS.get(self._card_radius, 8)
+            border_width, border_key = CARD_BORDER.get(self._card_border, (1, "border"))
+            border_color = self.theme_colors[border_key] if border_key != "transparent" else "transparent"
+            path_for_qss = self._glass_temp_path.replace("\\", "/")
+            self.shared_list.setStyleSheet(
+                f"QListWidget {{ background-image: url({path_for_qss}); "
+                f"background-position: top left; border: {border_width}px solid {border_color}; "
+                f"border-radius: {radius_px}px; padding: 4px; }}"
+            )
+        except Exception:
+            # Experimental effect — any failure here should never break
+            # the app or leave something corrupted-looking on screen.
+            self.shared_list.setStyleSheet("")
 
     def _apply_card_style_to_widgets(self) -> None:
         """
@@ -1308,6 +1397,8 @@ class MainWindow(QMainWindow):
         self.gradient_background.set_mode(mode)
         QSettings("LocalShare", "LocalShare").setValue("background_mode", mode)
         self._refresh_background_subpanel_visibility(mode)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
 
     def _refresh_background_subpanel_visibility(self, mode: str) -> None:
         self.gradient_panel.setVisible(mode == "gradient")
@@ -1335,6 +1426,8 @@ class MainWindow(QMainWindow):
         self._bg_image_path = path
         self.image_path_label.setText(os.path.basename(path))
         QSettings("LocalShare", "LocalShare").setValue("image_path", path)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
 
     def _apply_image_background_settings(self, *_args) -> None:
         settings = QSettings("LocalShare", "LocalShare")
@@ -1348,6 +1441,8 @@ class MainWindow(QMainWindow):
         settings.setValue("overlay_opacity", overlay)
         if self._bg_image_path:
             self.gradient_background.set_image(self._bg_image_path, position, scaling, opacity, overlay)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
 
     def _choose_background_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1374,6 +1469,13 @@ class MainWindow(QMainWindow):
         self._bg_video_path = path
         self.video_path_label.setText(os.path.basename(path))
         QSettings("LocalShare", "LocalShare").setValue("video_path", path)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            # For video specifically, the first captured frame may not
+            # have arrived yet (decoding is asynchronous) — the glass
+            # backdrop may briefly show a blank/black capture until the
+            # next trigger (resize, or any other settings change)
+            # refreshes it again with an actual frame in place.
+            self._refresh_glass_backdrop()
 
     def _apply_video_background_settings(self, *_args) -> None:
         settings = QSettings("LocalShare", "LocalShare")
@@ -1387,6 +1489,8 @@ class MainWindow(QMainWindow):
         settings.setValue("video_speed", speed)
         if self._bg_video_path:
             self.gradient_background.set_video(self._bg_video_path, loop, True, autoplay, opacity, speed)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
 
     def _delete_current_theme(self) -> None:
         name = self._current_theme_name
@@ -1504,39 +1608,56 @@ class MainWindow(QMainWindow):
         same widget instances created just before this call — moving
         them here just changes where they're displayed, not their
         behavior or state.
+
+        Laid out as a sidebar + pages (General/Sharing/Appearance/etc.
+        style, per the original spec) rather than one long scrolling
+        column — each page gets its own scroll area too, so a tall page
+        still can't cause the overlap/clipping issue from before.
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        dialog.setMinimumWidth(360)
-        dialog.resize(400, 640)
+        dialog.setMinimumSize(560, 480)
+        dialog.resize(640, 620)
 
-        # Wrapped in a scroll area for the same reason as the main
-        # window: this dialog has grown a lot across several rounds of
-        # additions (Sharing, Appearance, Background with 4 sub-panels,
-        # Cards, Preview, Updates, About) and no longer reliably fits
-        # on screen as a fixed-size dialog — without this, Qt was
-        # squeezing everything into whatever space was left, which is
-        # what caused sections to visually overlap.
         dialog_outer_layout = QVBoxLayout(dialog)
         dialog_outer_layout.setContentsMargins(0, 0, 0, 0)
         dialog_outer_layout.setSpacing(0)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        dialog_outer_layout.addWidget(scroll_area)
+        body_layout = QHBoxLayout()
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        dialog_outer_layout.addLayout(body_layout, stretch=1)
 
-        content = QWidget()
-        scroll_area.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        nav_list = QListWidget()
+        nav_list.setObjectName("SettingsNav")
+        nav_list.setFixedWidth(160)
+        nav_list.setFrameShape(QFrame.Shape.NoFrame)
+        body_layout.addWidget(nav_list)
 
-        sharing_label = QLabel("SHARING")
-        sharing_label.setObjectName("SectionLabel")
-        layout.addWidget(sharing_label)
+        pages_stack = QStackedWidget()
+        body_layout.addWidget(pages_stack, stretch=1)
+
+        def add_page(title: str) -> QVBoxLayout:
+            """Creates one nav entry + a scrollable page, returns the
+            page's content layout for that section's widgets to be
+            added to — same addWidget/addLayout calls as before, just
+            routed to the right page instead of one shared layout."""
+            nav_list.addItem(title)
+            page_scroll = QScrollArea()
+            page_scroll.setWidgetResizable(True)
+            page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            page_content = QWidget()
+            page_scroll.setWidget(page_content)
+            page_layout = QVBoxLayout(page_content)
+            page_layout.setContentsMargins(20, 20, 20, 20)
+            page_layout.setSpacing(14)
+            pages_stack.addWidget(page_scroll)
+            return page_layout
 
         settings = QSettings("LocalShare", "LocalShare")
+
+        # -- Sharing page --------------------------------------------------------------
+        layout = add_page("Sharing")
 
         self.auto_start_on_add_checkbox = QCheckBox("Automatically start sharing when files are added")
         self.auto_start_on_add_checkbox.setChecked(
@@ -1574,10 +1695,10 @@ class MainWindow(QMainWindow):
             )
         )
         layout.addWidget(self.auto_resume_shares_checkbox)
+        layout.addStretch()
 
-        appearance_label = QLabel("APPEARANCE")
-        appearance_label.setObjectName("SectionLabel")
-        layout.addWidget(appearance_label)
+        # -- Appearance page --------------------------------------------------------------
+        layout = add_page("Appearance")
 
         theme_row = QHBoxLayout()
         theme_row.addWidget(QLabel("Theme"))
@@ -1613,10 +1734,10 @@ class MainWindow(QMainWindow):
         accent_custom_row.addStretch()
         accent_custom_row.addWidget(self.accent_color_btn)
         layout.addLayout(accent_custom_row)
+        layout.addStretch()
 
-        background_label = QLabel("BACKGROUND")
-        background_label.setObjectName("SectionLabel")
-        layout.addWidget(background_label)
+        # -- Background page --------------------------------------------------------------
+        layout = add_page("Background")
 
         bg_mode_row = QHBoxLayout()
         for btn in (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio):
@@ -1705,10 +1826,14 @@ class MainWindow(QMainWindow):
         video_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         video_panel_layout.addWidget(video_note)
         layout.addWidget(self.video_panel)
+        layout.addStretch()
 
         self._refresh_background_subpanel_visibility(
             QSettings("LocalShare", "LocalShare").value("background_mode", "solid")
         )
+
+        # -- Effects page (Cards, Transparency, Glass, Motion, Performance) --------------------------------------------------------------
+        layout = add_page("Effects")
 
         cards_label = QLabel("CARDS")
         cards_label.setObjectName("SectionLabel")
@@ -1737,16 +1862,33 @@ class MainWindow(QMainWindow):
         transparency_row.addWidget(self.transparency_slider)
         layout.addLayout(transparency_row)
         transparency_note = QLabel(
-            "Makes cards see-through over your background — doesn't blur what's behind them."
+            "Makes cards see-through over your background — doesn't blur what's behind them "
+            "(see Glass Effect below for that)."
         )
         transparency_note.setWordWrap(True)
         transparency_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         layout.addWidget(transparency_note)
 
-        updates_label = QLabel("UPDATES")
-        updates_label.setObjectName("SectionLabel")
-        layout.addWidget(updates_label)
-        layout.addWidget(self.auto_check_updates_checkbox)
+        glass_label = QLabel("GLASS EFFECT")
+        glass_label.setObjectName("SectionLabel")
+        layout.addWidget(glass_label)
+
+        glass_row = QHBoxLayout()
+        glass_row.addWidget(QLabel("Blur behind cards"))
+        glass_row.addStretch()
+        glass_row.addWidget(self.glass_effect_combo)
+        layout.addLayout(glass_row)
+        glass_note = QLabel(
+            "Genuinely experimental — blurs a snapshot of your background behind the shared "
+            "items list. Qt has no native support for this, so it's a real hack: the blur is a "
+            "still snapshot, refreshed on resize/theme/background changes rather than tracking "
+            "a moving background frame-by-frame. With an animated background (Gradient/Video), "
+            "expect it to look slightly stale rather than perfectly live. Turn it off if it "
+            "looks wrong or hurts performance."
+        )
+        glass_note.setWordWrap(True)
+        glass_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(glass_note)
 
         motion_label = QLabel("MOTION")
         motion_label.setObjectName("SectionLabel")
@@ -1787,6 +1929,7 @@ class MainWindow(QMainWindow):
         perf_row.addWidget(self.perf_balanced_radio)
         perf_row.addWidget(self.perf_performance_radio)
         layout.addLayout(perf_row)
+        layout.addStretch()
 
         # Apply restored state now — the toggled signals above only
         # fire on a genuine state *change*, which won't happen just
@@ -1796,13 +1939,22 @@ class MainWindow(QMainWindow):
         self.gradient_background.set_reduce_motion(_persisted_reduce_motion)
         hover_button_module.ANIMATION_DURATION_MS = 0 if _persisted_reduce_motion else 180
 
-        about_label = QLabel("ABOUT")
-        about_label.setObjectName("SectionLabel")
-        layout.addWidget(about_label)
+        # -- Updates page --------------------------------------------------------------
+        layout = add_page("Updates")
+        layout.addWidget(self.auto_check_updates_checkbox)
+        layout.addStretch()
+
+        # -- About page --------------------------------------------------------------
+        layout = add_page("About")
         about_text = QLabel(f"LocalShare v{APP_VERSION} — Developed by ANARKALI")
         about_text.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self._about_label = about_text  # kept for theme refresh
         layout.addWidget(about_text)
+        layout.addStretch()
+
+        nav_list.currentRowChanged.connect(pages_stack.setCurrentIndex)
+        nav_list.setCurrentRow(0)
+        self.settings_nav_list = nav_list
 
         close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
         close_btn.clicked.connect(dialog.accept)
@@ -1974,6 +2126,14 @@ class MainWindow(QMainWindow):
             "can update cleanly — reopen it once installation finishes.",
         )
         QApplication.instance().quit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
+        # Refreshes the glass-effect backdrop snapshot (if enabled) to
+        # match the new window size — otherwise it'd keep showing a
+        # blurred capture from before the resize, visibly stale/wrong.
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            self._refresh_glass_backdrop()
+        super().resizeEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         """Pauses animated/video backgrounds while minimized (nothing is
