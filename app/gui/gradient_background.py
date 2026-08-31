@@ -24,7 +24,7 @@ import math
 import os
 import time
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
@@ -333,7 +333,21 @@ class AnimatedGradientBackground(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_content(painter)
+        painter.end()
 
+    def _paint_content(self, painter: QPainter) -> None:
+        """
+        The actual background drawing (base mode + particle overlay) —
+        factored out of paintEvent so it can ALSO be used to render an
+        offscreen snapshot containing only this widget's own painting,
+        with none of its children (the title, buttons, the shared
+        items list itself, etc.) composited in. QWidget.grab() renders
+        a widget PLUS its children, which is wrong for that use case —
+        this widget is the whole window's central/background widget,
+        so grab()-ing it was capturing a screenshot of the entire
+        window, not just the background art. See capture_region().
+        """
         if self._mode == "gradient":
             self._paint_gradient(painter)
         elif self._mode == "image" and self._image_pixmap is not None:
@@ -365,7 +379,22 @@ class AnimatedGradientBackground(QWidget):
             elif self._particle_overlay == "Ink":
                 self._draw_ink_particles(painter, w, h)
 
+    def capture_region(self, rect: QRect) -> QPixmap:
+        """
+        Renders just this widget's own background/overlay painting (no
+        child widgets — see _paint_content's docstring for why that
+        matters) and returns the portion within `rect` (in this
+        widget's local coordinate system). Used by the Glass Effect to
+        get a clean backdrop snapshot instead of accidentally capturing
+        foreground UI text/buttons along with it.
+        """
+        full = QPixmap(self.size())
+        full.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(full)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_content(painter)
         painter.end()
+        return full.copy(rect)
 
     def _paint_gradient(self, painter: QPainter) -> None:
         elapsed = time.monotonic() - self._start_time

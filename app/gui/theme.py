@@ -330,6 +330,15 @@ QListWidget::item {{
 }}
 QListWidget::item:selected {{
     background-color: {c['selected_bg']};
+    outline: none;
+    border: none;
+}}
+QListWidget::item:focus {{
+    outline: none;
+    border: none;
+}}
+QListWidget:focus {{
+    outline: none;
 }}
 QLineEdit {{
     background-color: {surface_color};
@@ -354,6 +363,15 @@ QComboBox {{
 }}
 QComboBox:hover {{
     border-color: {c['accent']};
+}}
+QComboBox::drop-down {{
+    border: none;
+    background: transparent;
+    width: 22px;
+}}
+QComboBox::down-arrow {{
+    width: 10px;
+    height: 10px;
 }}
 QComboBox QAbstractItemView {{
     background-color: {c['surface']};

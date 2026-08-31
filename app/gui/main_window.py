@@ -1292,7 +1292,7 @@ class MainWindow(QMainWindow):
             if size.width() <= 0 or size.height() <= 0:
                 return
 
-            snapshot = self.gradient_background.grab(QRect(offset, size))
+            snapshot = self.gradient_background.capture_region(QRect(offset, size))
             if snapshot.isNull():
                 self.shared_list.setStyleSheet("")
                 return
