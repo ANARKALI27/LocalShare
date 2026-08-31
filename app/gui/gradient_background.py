@@ -119,7 +119,14 @@ class AnimatedGradientBackground(QWidget):
             if self._video_player is not None and self._video_autoplay and not self._reduce_motion:
                 self._video_player.play()
         elif self._video_player is not None:
-            self._video_player.pause()
+            # Fully stop (not just pause) when leaving video mode, and
+            # drop the last decoded frame — paintEvent already won't
+            # draw it once self._mode != "video", but holding onto a
+            # stale QImage and a still-active player serves no purpose
+            # once we've switched away, and stop() (vs pause()) also
+            # releases more of the underlying decoder's resources.
+            self._video_player.stop()
+            self._current_video_image = None
         self.update()
 
     def set_animated(self, enabled: bool) -> None:
@@ -258,6 +265,17 @@ class AnimatedGradientBackground(QWidget):
             self._timer.start()
 
     # -- painting -----------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
+        # Belt-and-suspenders: Qt normally schedules a repaint on
+        # resize automatically, but every paint method here recomputes
+        # its layout from self.width()/height() fresh each call (no
+        # caching), so explicitly forcing one on every resize — maximize,
+        # un-maximize, manual drag — removes any doubt that a background
+        # could visibly lag behind the window's actual new size for even
+        # one frame.
+        self.update()
+        super().resizeEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         painter = QPainter(self)
@@ -477,11 +495,14 @@ class AnimatedGradientBackground(QWidget):
     def _paint_rain(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
         """Thin diagonal streaks falling fast, looping from top to
         bottom — same looping mechanism as snow, faster and drawn as
-        short lines instead of dots."""
+        short lines instead of dots. Fixed pale blue-grey, matching
+        how rain actually looks against light — not tinted by the
+        theme's accent color, the same way real rain doesn't change
+        color because you're wearing a different shirt."""
         painter.fillRect(self.rect(), self._bg_color)
 
-        pen_color = QColor(self._accent_color).lighter(140)
-        pen_color.setAlphaF(0.35)
+        pen_color = QColor(174, 194, 224)
+        pen_color.setAlphaF(0.4)
         painter.setPen(pen_color)
 
         for i in range(self._RAIN_COUNT):
