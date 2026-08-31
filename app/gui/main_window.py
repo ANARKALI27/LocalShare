@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -46,7 +47,17 @@ from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
 import app.gui.hover_button as hover_button_module
 from app.gui.qr_widget import generate_qr_pixmap
-from app.gui.theme import ACCENT_PRESETS, FULL_KEYS, THEMES, build_stylesheet, theme_to_json, theme_from_json
+from app.gui.theme import (
+    ACCENT_PRESETS,
+    CARD_BORDER,
+    CARD_RADIUS,
+    CARD_SHADOW_BLUR,
+    FULL_KEYS,
+    THEMES,
+    build_stylesheet,
+    theme_to_json,
+    theme_from_json,
+)
 from app.paths import ICON_PATH
 from app.gui.update_checker import (
     check_for_update,
@@ -176,6 +187,16 @@ class MainWindow(QMainWindow):
         self._custom_accent = _persisted.value("custom_accent", None) or None  # QSettings can return "" instead of None
         self._bg_image_path: str | None = _persisted.value("image_path", None) or None
         self._bg_video_path: str | None = _persisted.value("video_path", None) or None
+        self._card_radius = _persisted.value("card_radius", "Medium")
+        if self._card_radius not in CARD_RADIUS:
+            self._card_radius = "Medium"
+        self._card_border = _persisted.value("card_border", "Subtle")
+        if self._card_border not in CARD_BORDER:
+            self._card_border = "Subtle"
+        self._card_shadow = _persisted.value("card_shadow", "None")
+        if self._card_shadow not in CARD_SHADOW_BLUR:
+            self._card_shadow = "None"
+        self._surface_alpha = float(_persisted.value("surface_alpha", 1.0))
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
         self.theme_colors = self._compute_theme_colors()
         # Applied at the QApplication level, not just this window — a
@@ -184,7 +205,7 @@ class MainWindow(QMainWindow):
         # the Settings dialog and popups rendering unstyled/white
         # against the app's dark theme. The application level is what
         # Qt actually guarantees reaches every window.
-        QApplication.instance().setStyleSheet(build_stylesheet(self.theme_colors))
+        QApplication.instance().setStyleSheet(build_stylesheet(self.theme_colors, self._current_card_style()))
 
         self.share_manager = ShareManager()
         self.share_manager.on_change(self._refresh_shared_list)
@@ -394,6 +415,45 @@ class MainWindow(QMainWindow):
                 _persisted_video_opacity, _persisted_video_speed,
             )
         self.gradient_background.set_mode(_persisted_bg_mode)
+
+        # -- card style + transparency --------------------------------------------------------------
+        self.card_radius_combo = QComboBox()
+        self.card_radius_combo.addItems(CARD_RADIUS.keys())
+        self.card_radius_combo.setCurrentText(self._card_radius)
+        self.card_radius_combo.currentTextChanged.connect(self._set_card_radius)
+
+        self.card_border_combo = QComboBox()
+        self.card_border_combo.addItems(CARD_BORDER.keys())
+        self.card_border_combo.setCurrentText(self._card_border)
+        self.card_border_combo.currentTextChanged.connect(self._set_card_border)
+
+        self.card_shadow_combo = QComboBox()
+        self.card_shadow_combo.addItems(CARD_SHADOW_BLUR.keys())
+        self.card_shadow_combo.setCurrentText(self._card_shadow)
+        self.card_shadow_combo.currentTextChanged.connect(self._set_card_shadow)
+
+        self.transparency_slider = QSlider(Qt.Orientation.Horizontal)
+        self.transparency_slider.setRange(30, 100)  # never fully invisible — 30% is the floor
+        self.transparency_slider.setValue(int(self._surface_alpha * 100))
+        self.transparency_slider.valueChanged.connect(self._set_surface_alpha)
+
+        # -- live preview panel --------------------------------------------------------------
+        self.preview_panel = QFrame()
+        self.preview_panel.setFixedHeight(90)
+        preview_layout = QVBoxLayout(self.preview_panel)
+        preview_layout.setContentsMargins(10, 8, 10, 8)
+        self.preview_title_label = QLabel("LocalShare")
+        self.preview_title_label.setStyleSheet("font-weight: 600; font-size: 13px;")
+        preview_layout.addWidget(self.preview_title_label)
+        preview_row = QHBoxLayout()
+        self.preview_sample_btn = QPushButton("Sample Button")
+        self.preview_sample_btn.setEnabled(False)  # purely illustrative — not a real action
+        preview_row.addWidget(self.preview_sample_btn)
+        preview_row.addStretch()
+        preview_layout.addLayout(preview_row)
+        self.preview_progress = QLabel()
+        self.preview_progress.setFixedHeight(8)
+        preview_layout.addWidget(self.preview_progress)
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -612,6 +672,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.credit_label)
 
         self._build_settings_dialog()
+        self._apply_card_style_to_widgets()
 
     # -- drop / browse handlers -----------------------------------------------------------
     def _on_paths_dropped(self, paths: list[str]) -> None:
@@ -1029,6 +1090,13 @@ class MainWindow(QMainWindow):
         if address:
             QGuiApplication.clipboard().setText(address)
 
+    def _current_card_style(self) -> dict:
+        return {
+            "radius": self._card_radius,
+            "border": self._card_border,
+            "surface_alpha": self._surface_alpha,
+        }
+
     def _current_base_colors(self) -> dict:
         """
         A fresh copy of the currently selected theme's palette — either
@@ -1107,7 +1175,7 @@ class MainWindow(QMainWindow):
         colors = self._compute_theme_colors()
         self.theme_colors = colors
 
-        QApplication.instance().setStyleSheet(build_stylesheet(colors))
+        QApplication.instance().setStyleSheet(build_stylesheet(colors, self._current_card_style()))
         self.drop_zone.set_theme(colors)
 
         dim_style = f"color: {colors['text_dim']}; font-size: 12px;"
@@ -1145,6 +1213,70 @@ class MainWindow(QMainWindow):
             self.status_dot.setStyleSheet(f"color: {colors['success']}; font-size: 14px;")
         else:
             self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
+
+        if hasattr(self, "preview_panel"):
+            self._refresh_live_preview()
+
+    def _set_card_radius(self, value: str) -> None:
+        self._card_radius = value
+        QSettings("LocalShare", "LocalShare").setValue("card_radius", value)
+        self._apply_theme()
+        self._apply_card_style_to_widgets()
+
+    def _set_card_border(self, value: str) -> None:
+        self._card_border = value
+        QSettings("LocalShare", "LocalShare").setValue("card_border", value)
+        self._apply_theme()
+        self._apply_card_style_to_widgets()
+
+    def _set_card_shadow(self, value: str) -> None:
+        self._card_shadow = value
+        QSettings("LocalShare", "LocalShare").setValue("card_shadow", value)
+        self._apply_card_style_to_widgets()
+
+    def _set_surface_alpha(self, slider_value: int) -> None:
+        self._surface_alpha = slider_value / 100.0
+        QSettings("LocalShare", "LocalShare").setValue("surface_alpha", self._surface_alpha)
+        self._apply_theme()
+
+    def _apply_card_style_to_widgets(self) -> None:
+        """
+        QSS has no box-shadow property at all, so 'shadow' is done via
+        QGraphicsDropShadowEffect applied directly to the most visually
+        prominent card-like widgets, rather than through the generated
+        stylesheet like radius/border/transparency are.
+        """
+        blur = CARD_SHADOW_BLUR.get(self._card_shadow, 0)
+        for widget in (self.shared_list, self.settings_dialog):
+            if blur > 0:
+                shadow = QGraphicsDropShadowEffect(widget)
+                shadow.setBlurRadius(blur)
+                shadow.setOffset(0, 3)
+                shadow.setColor(QColor(0, 0, 0, 130))
+                widget.setGraphicsEffect(shadow)
+            else:
+                widget.setGraphicsEffect(None)
+        self._refresh_live_preview()
+
+    def _refresh_live_preview(self) -> None:
+        colors = self.theme_colors
+        radius = CARD_RADIUS.get(self._card_radius, 8)
+        border_width, border_key = CARD_BORDER.get(self._card_border, (1, "border"))
+        border_color = colors[border_key] if border_key != "transparent" else "transparent"
+        self.preview_panel.setStyleSheet(
+            f"background-color: {colors['surface']}; border: {border_width}px solid {border_color}; "
+            f"border-radius: {radius}px;"
+        )
+        self.preview_title_label.setStyleSheet(
+            f"color: {colors['text']}; font-weight: 600; font-size: 13px; background: transparent;"
+        )
+        self.preview_sample_btn.setStyleSheet(
+            f"background-color: {colors['accent']}; color: white; border-radius: {max(radius - 4, 0)}px; "
+            f"padding: 4px 10px; border: none;"
+        )
+        self.preview_progress.setStyleSheet(
+            f"background-color: {colors['accent']}; border-radius: 4px;"
+        )
 
     def _on_theme_selected(self, theme_name: str) -> None:
         if theme_name not in THEMES and theme_name not in self._custom_themes:
@@ -1553,6 +1685,44 @@ class MainWindow(QMainWindow):
         self._refresh_background_subpanel_visibility(
             QSettings("LocalShare", "LocalShare").value("background_mode", "solid")
         )
+
+        cards_label = QLabel("CARDS")
+        cards_label.setObjectName("SectionLabel")
+        layout.addWidget(cards_label)
+
+        card_radius_row = QHBoxLayout()
+        card_radius_row.addWidget(QLabel("Corner radius"))
+        card_radius_row.addStretch()
+        card_radius_row.addWidget(self.card_radius_combo)
+        layout.addLayout(card_radius_row)
+
+        card_border_row = QHBoxLayout()
+        card_border_row.addWidget(QLabel("Border"))
+        card_border_row.addStretch()
+        card_border_row.addWidget(self.card_border_combo)
+        layout.addLayout(card_border_row)
+
+        card_shadow_row = QHBoxLayout()
+        card_shadow_row.addWidget(QLabel("Shadow"))
+        card_shadow_row.addStretch()
+        card_shadow_row.addWidget(self.card_shadow_combo)
+        layout.addLayout(card_shadow_row)
+
+        transparency_row = QHBoxLayout()
+        transparency_row.addWidget(QLabel("Transparency"))
+        transparency_row.addWidget(self.transparency_slider)
+        layout.addLayout(transparency_row)
+        transparency_note = QLabel(
+            "Makes cards see-through over your background — doesn't blur what's behind them."
+        )
+        transparency_note.setWordWrap(True)
+        transparency_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(transparency_note)
+
+        preview_label = QLabel("PREVIEW")
+        preview_label.setObjectName("SectionLabel")
+        layout.addWidget(preview_label)
+        layout.addWidget(self.preview_panel)
 
         updates_label = QLabel("UPDATES")
         updates_label.setObjectName("SectionLabel")

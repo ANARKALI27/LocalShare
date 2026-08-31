@@ -267,13 +267,39 @@ def theme_from_json(json_text: str) -> tuple[str, dict]:
     return name, {k: colors[k] for k in FULL_KEYS}
 
 
-def build_stylesheet(c: dict) -> str:
+CARD_RADIUS = {"Sharp": 0, "Small": 4, "Medium": 8, "Large": 14, "Extra Large": 20}
+CARD_BORDER = {"None": (0, "transparent"), "Subtle": (1, "border"), "Visible": (2, "border")}
+CARD_SHADOW_BLUR = {"None": 0, "Subtle": 10, "Medium": 20, "Strong": 34}
+
+
+def build_stylesheet(c: dict, card_style: dict | None = None) -> str:
+    """
+    card_style (all optional, sensible defaults if omitted):
+      - radius: one of CARD_RADIUS's keys (default "Medium")
+      - border: one of CARD_BORDER's keys (default "Subtle")
+      - surface_alpha: 0.0 (fully transparent) .. 1.0 (fully opaque), default 1.0
+
+    Note on "surface transparency": this makes cards/panels genuinely
+    see-through over whatever background is behind the window (solid,
+    gradient, image, or video) — it does NOT blur that background,
+    since Qt Widgets has no equivalent to CSS backdrop-filter. Real
+    glassmorphism (blurring what's behind a translucent panel) would
+    need custom compositing this project doesn't implement.
+    """
+    style = card_style or {}
+    radius = CARD_RADIUS.get(style.get("radius", "Medium"), 8)
+    border_width, border_key = CARD_BORDER.get(style.get("border", "Subtle"), (1, "border"))
+    border_color = c[border_key] if border_key != "transparent" else "transparent"
+    surface_alpha = style.get("surface_alpha", 1.0)
+    surface_color = c["surface"] if surface_alpha >= 0.999 else _hex_to_rgba_string(c["surface"], surface_alpha)
+    bg_color = c["bg"] if surface_alpha >= 0.999 else _hex_to_rgba_string(c["bg"], surface_alpha)
+
     return f"""
 QMainWindow {{
     background-color: {c['bg']};
 }}
 QDialog {{
-    background-color: {c['bg']};
+    background-color: {bg_color};
 }}
 QWidget {{
     color: {c['text']};
@@ -293,22 +319,22 @@ QLabel#SectionLabel {{
     letter-spacing: 1px;
 }}
 QListWidget {{
-    background-color: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: 8px;
+    background-color: {surface_color};
+    border: {border_width}px solid {border_color};
+    border-radius: {radius}px;
     padding: 4px;
 }}
 QListWidget::item {{
     padding: 8px;
-    border-radius: 6px;
+    border-radius: {max(radius - 2, 0)}px;
 }}
 QListWidget::item:selected {{
     background-color: {c['selected_bg']};
 }}
 QLineEdit {{
-    background-color: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: 6px;
+    background-color: {surface_color};
+    border: {border_width}px solid {border_color};
+    border-radius: {max(radius - 2, 0)}px;
     padding: 6px 10px;
     color: {c['text']};
 }}
@@ -317,12 +343,12 @@ QLineEdit:focus {{
 }}
 QLineEdit:disabled {{
     color: {c['text_dim']};
-    background-color: {c['bg']};
+    background-color: {bg_color};
 }}
 QComboBox {{
-    background-color: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: 6px;
+    background-color: {surface_color};
+    border: {border_width}px solid {border_color};
+    border-radius: {max(radius - 2, 0)}px;
     padding: 6px 10px;
     color: {c['text']};
 }}
