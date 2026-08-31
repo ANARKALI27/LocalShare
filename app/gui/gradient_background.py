@@ -29,10 +29,12 @@ from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap, QR
 from PySide6.QtWidgets import QWidget
 
 from app.gui.background_layout_math import compute_image_placement
+from app.gui.fluid_math import is_alive, particle_alpha, spawn_velocity, update_particle, MAX_LIFE, MAX_PARTICLES
 
 STYLES = ["Sweep", "Pulse", "Aurora", "Mesh", "Fluid", "Snow", "Rain", "Fire"]
 PARTICLE_STYLES = ["Snow", "Rain", "Fire"]
 MODES = ["solid", "gradient", "image", "video"]
+OVERLAY_STYLES = ["Snow", "Rain", "Fire", "Ink"]
 
 
 class AnimatedGradientBackground(QWidget):
@@ -81,12 +83,23 @@ class AnimatedGradientBackground(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(50)  # ~20fps default (Balanced) — see set_performance_mode()
         self._timer.timeout.connect(self.update)
+        self._timer.timeout.connect(self._advance_ink_particles)
         self._reduce_motion = False
 
         # -- particle overlay (Snow/Rain/Fire drawn ON TOP of whatever
         # the base mode is — Solid, Gradient, Image, or Video — rather
         # than only being available as a Gradient-mode style) --
         self._particle_overlay: str | None = None
+
+        # -- "Ink" overlay: stylized cursor-reactive flow, NOT a real
+        # fluid/Navier-Stokes simulation (that needs GPU shaders, out
+        # of scope for this QPainter-based widget — see fluid_math.py).
+        # Particles spawn at the cursor and are pushed by a cheap
+        # pseudo-curl force field for an organic swirl.
+        self.setMouseTracking(True)
+        self._ink_particles: list[list[float]] = []  # each: [x, y, vx, vy, age]
+        self._last_mouse_pos: tuple[float, float] | None = None
+        self._last_mouse_time: float | None = None
 
     # -- performance / reduce motion -----------------------------------------------------------
 
@@ -133,11 +146,13 @@ class AnimatedGradientBackground(QWidget):
                 self._video_player.play()
 
     def set_particle_overlay(self, style: str | None) -> None:
-        """Draws Snow/Rain/Fire ON TOP of whatever the base mode is —
-        works with Solid, Gradient, Image, or Video alike, not just as
+        """Draws Snow/Rain/Fire/Ink ON TOP of whatever the base mode is
+        — works with Solid, Gradient, Image, or Video alike, not just as
         a Gradient-mode style. Pass None to turn the overlay off."""
-        if style is not None and style not in PARTICLE_STYLES:
+        if style is not None and style not in OVERLAY_STYLES:
             return
+        if self._particle_overlay == "Ink" and style != "Ink":
+            self._ink_particles.clear()  # don't leave stale ink hanging around after switching away
         self._particle_overlay = style
         self._sync_timer()
         self.update()
@@ -347,6 +362,8 @@ class AnimatedGradientBackground(QWidget):
                 self._draw_rain_particles(painter, w, h, elapsed)
             elif self._particle_overlay == "Fire":
                 self._draw_fire_particles(painter, w, h, elapsed)
+            elif self._particle_overlay == "Ink":
+                self._draw_ink_particles(painter, w, h)
 
         painter.end()
 
@@ -530,6 +547,68 @@ class AnimatedGradientBackground(QWidget):
     def _paint_snow(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
         painter.fillRect(self.rect(), self._bg_color)
         self._draw_snow_particles(painter, w, h, elapsed)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
+        if self._particle_overlay == "Ink":
+            pos = event.position()
+            x, y = pos.x(), pos.y()
+            now = time.monotonic()
+            if self._last_mouse_pos is not None and self._last_mouse_time is not None:
+                dt = max(now - self._last_mouse_time, 1e-4)
+                cursor_vx = (x - self._last_mouse_pos[0]) / dt
+                cursor_vy = (y - self._last_mouse_pos[1]) / dt
+                speed = math.hypot(cursor_vx, cursor_vy)
+                # A quick swipe spawns more particles than a slow drift
+                # — capped, so a fast fling doesn't dump hundreds of
+                # particles in a single frame.
+                spawn_count = min(6, 1 + int(speed / 200))
+                for i in range(spawn_count):
+                    if len(self._ink_particles) >= MAX_PARTICLES:
+                        self._ink_particles.pop(0)  # drop the oldest to make room
+                    vx, vy = spawn_velocity(
+                        cursor_vx * 0.3, cursor_vy * 0.3, jitter=0.6, seed_index=len(self._ink_particles) + i
+                    )
+                    self._ink_particles.append([x, y, vx, vy, 0.0])
+            self._last_mouse_pos = (x, y)
+            self._last_mouse_time = now
+        super().mouseMoveEvent(event)
+
+    def _advance_ink_particles(self) -> None:
+        if self._particle_overlay != "Ink" or not self._ink_particles:
+            return
+        dt = self._timer.interval() / 1000.0  # seconds per tick, matches actual timer cadence
+        t = time.monotonic() - self._start_time
+        still_alive = []
+        for p in self._ink_particles:
+            x, y, vx, vy, age = update_particle(p[0], p[1], p[2], p[3], p[4], dt, t)
+            if is_alive(age, MAX_LIFE):
+                still_alive.append([x, y, vx, vy, age])
+        self._ink_particles = still_alive
+
+    def _draw_ink_particles(self, painter: QPainter, w: int, h: int) -> None:
+        """Soft glowing blobs, colored from the theme accent (this is an
+        abstract stylized effect, not a real-world phenomenon like
+        snow/rain/fire — tying it to the accent color is the expected,
+        consistent behavior here, matching Aurora/Mesh/Fluid's existing
+        gradient styles)."""
+        painter.setPen(Qt.PenStyle.NoPen)
+        for x, y, vx, vy, age in self._ink_particles:
+            alpha = particle_alpha(age, MAX_LIFE)
+            if alpha <= 0.01:
+                continue
+            speed = math.hypot(vx, vy)
+            radius = 14 + min(speed * 0.05, 20)
+
+            gradient = QRadialGradient(QPointF(x, y), max(radius, 1.0))
+            core = QColor(self._accent_color)
+            core.setAlphaF(min(1.0, alpha * 0.55))
+            edge = QColor(self._accent_color)
+            edge.setAlpha(0)
+            gradient.setColorAt(0.0, core)
+            gradient.setColorAt(1.0, edge)
+
+            painter.setBrush(gradient)
+            painter.drawEllipse(QPointF(x, y), radius, radius)
 
     def _draw_snow_particles(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
         """Small pale particles drifting slowly downward, looping from

@@ -419,8 +419,8 @@ class MainWindow(QMainWindow):
         # -- particle overlay: Snow/Rain/Fire on top of ANY background mode --
         _persisted_particle_overlay = _bg_settings.value("particle_overlay", "None")
         self.particle_overlay_combo = QComboBox()
-        self.particle_overlay_combo.addItems(["None", "Snow", "Rain", "Fire"])
-        if _persisted_particle_overlay in ("None", "Snow", "Rain", "Fire"):
+        self.particle_overlay_combo.addItems(["None", "Snow", "Rain", "Fire", "Ink"])
+        if _persisted_particle_overlay in ("None", "Snow", "Rain", "Fire", "Ink"):
             self.particle_overlay_combo.setCurrentText(_persisted_particle_overlay)
         self.particle_overlay_combo.currentTextChanged.connect(self._set_particle_overlay)
         self.gradient_background.set_particle_overlay(
@@ -1660,7 +1660,11 @@ class MainWindow(QMainWindow):
         particle_overlay_row.addStretch()
         particle_overlay_row.addWidget(self.particle_overlay_combo)
         layout.addLayout(particle_overlay_row)
-        particle_overlay_note = QLabel("Snow, Rain, or Fire drawn on top — works with any background mode above.")
+        particle_overlay_note = QLabel(
+            "Snow, Rain, Fire, or Ink drawn on top — works with any background mode above. "
+            "Ink is a stylized flow effect that reacts to your mouse cursor, not a real fluid "
+            "simulation (that needs GPU shaders, which this app doesn't use)."
+        )
         particle_overlay_note.setWordWrap(True)
         particle_overlay_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         layout.addWidget(particle_overlay_note)
