@@ -1518,8 +1518,29 @@ class MainWindow(QMainWindow):
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        dialog.setMinimumWidth(320)
-        layout = QVBoxLayout(dialog)
+        dialog.setMinimumWidth(360)
+        dialog.resize(400, 640)
+
+        # Wrapped in a scroll area for the same reason as the main
+        # window: this dialog has grown a lot across several rounds of
+        # additions (Sharing, Appearance, Background with 4 sub-panels,
+        # Cards, Preview, Updates, About) and no longer reliably fits
+        # on screen as a fixed-size dialog — without this, Qt was
+        # squeezing everything into whatever space was left, which is
+        # what caused sections to visually overlap.
+        dialog_outer_layout = QVBoxLayout(dialog)
+        dialog_outer_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_outer_layout.setSpacing(0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        dialog_outer_layout.addWidget(scroll_area)
+
+        content = QWidget()
+        scroll_area.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
 
         sharing_label = QLabel("SHARING")
@@ -1787,7 +1808,11 @@ class MainWindow(QMainWindow):
 
         close_btn = HoverGlowButton("Close", glow_color=self.theme_colors["accent"])
         close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
+        close_btn_wrapper = QWidget()
+        close_btn_layout = QVBoxLayout(close_btn_wrapper)
+        close_btn_layout.setContentsMargins(16, 8, 16, 16)
+        close_btn_layout.addWidget(close_btn)
+        dialog_outer_layout.addWidget(close_btn_wrapper)
 
         self.settings_dialog = dialog
         self._settings_close_btn = close_btn  # kept for theme/glow-color refresh
