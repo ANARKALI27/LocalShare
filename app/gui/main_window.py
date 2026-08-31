@@ -1242,12 +1242,18 @@ class MainWindow(QMainWindow):
     def _apply_card_style_to_widgets(self) -> None:
         """
         QSS has no box-shadow property at all, so 'shadow' is done via
-        QGraphicsDropShadowEffect applied directly to the most visually
-        prominent card-like widgets, rather than through the generated
-        stylesheet like radius/border/transparency are.
+        QGraphicsDropShadowEffect applied directly to genuinely simple
+        card-like widgets — NOT to self.settings_dialog itself. That
+        was a real mistake: a graphics effect applied to an entire
+        dialog containing a big scrolling widget tree doesn't render as
+        a soft shadow, it visibly breaks down into a duplicated "echo"
+        of the whole dialog's content. A top-level window also already
+        gets its own native OS shadow, so a dialog-wide effect was
+        never the right target to begin with — only small, self-
+        contained cards should get this.
         """
         blur = CARD_SHADOW_BLUR.get(self._card_shadow, 0)
-        for widget in (self.shared_list, self.settings_dialog):
+        for widget in (self.shared_list, self.preview_panel):
             if blur > 0:
                 shadow = QGraphicsDropShadowEffect(widget)
                 shadow.setBlurRadius(blur)
