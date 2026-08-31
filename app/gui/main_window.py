@@ -11,7 +11,7 @@ import json
 import os
 import platform
 
-from PySide6.QtCore import Qt, QSettings, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, Qt, QSettings, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
