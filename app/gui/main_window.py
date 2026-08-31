@@ -416,6 +416,17 @@ class MainWindow(QMainWindow):
             )
         self.gradient_background.set_mode(_persisted_bg_mode)
 
+        # -- particle overlay: Snow/Rain/Fire on top of ANY background mode --
+        _persisted_particle_overlay = _bg_settings.value("particle_overlay", "None")
+        self.particle_overlay_combo = QComboBox()
+        self.particle_overlay_combo.addItems(["None", "Snow", "Rain", "Fire"])
+        if _persisted_particle_overlay in ("None", "Snow", "Rain", "Fire"):
+            self.particle_overlay_combo.setCurrentText(_persisted_particle_overlay)
+        self.particle_overlay_combo.currentTextChanged.connect(self._set_particle_overlay)
+        self.gradient_background.set_particle_overlay(
+            None if _persisted_particle_overlay == "None" else _persisted_particle_overlay
+        )
+
         # -- card style + transparency --------------------------------------------------------------
         self.card_radius_combo = QComboBox()
         self.card_radius_combo.addItems(CARD_RADIUS.keys())
@@ -1321,6 +1332,10 @@ class MainWindow(QMainWindow):
         self.gradient_background.set_performance_mode(mode)
         QSettings("LocalShare", "LocalShare").setValue("performance_mode", mode)
 
+    def _set_particle_overlay(self, value: str) -> None:
+        self.gradient_background.set_particle_overlay(None if value == "None" else value)
+        QSettings("LocalShare", "LocalShare").setValue("particle_overlay", value)
+
     def _set_background_mode(self, mode: str) -> None:
         self.gradient_background.set_mode(mode)
         QSettings("LocalShare", "LocalShare").setValue("background_mode", mode)
@@ -1639,6 +1654,16 @@ class MainWindow(QMainWindow):
         for btn in (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio):
             bg_mode_row.addWidget(btn)
         layout.addLayout(bg_mode_row)
+
+        particle_overlay_row = QHBoxLayout()
+        particle_overlay_row.addWidget(QLabel("Overlay effect"))
+        particle_overlay_row.addStretch()
+        particle_overlay_row.addWidget(self.particle_overlay_combo)
+        layout.addLayout(particle_overlay_row)
+        particle_overlay_note = QLabel("Snow, Rain, or Fire drawn on top — works with any background mode above.")
+        particle_overlay_note.setWordWrap(True)
+        particle_overlay_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(particle_overlay_note)
 
         # -- gradient panel --
         self.gradient_panel = QWidget()

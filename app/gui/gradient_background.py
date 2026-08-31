@@ -42,6 +42,16 @@ class AnimatedGradientBackground(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # Tells Qt this widget always paints every pixel of its own
+        # rect itself (true in every code path here — every paint
+        # method fills the whole background before drawing anything
+        # else) — without this, Qt can perform its own separate
+        # background auto-fill pass before calling paintEvent, which on
+        # some graphics drivers is visible as a brief flash of the old
+        # content during a full repaint (e.g. switching background mode).
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+
         self._bg_color = QColor("#1E1F26")
         self._accent_color = QColor("#4C8DFF")
         self._mode = "solid"
@@ -73,6 +83,11 @@ class AnimatedGradientBackground(QWidget):
         self._timer.timeout.connect(self.update)
         self._reduce_motion = False
 
+        # -- particle overlay (Snow/Rain/Fire drawn ON TOP of whatever
+        # the base mode is — Solid, Gradient, Image, or Video — rather
+        # than only being available as a Gradient-mode style) --
+        self._particle_overlay: str | None = None
+
     # -- performance / reduce motion -----------------------------------------------------------
 
     def set_performance_mode(self, mode: str) -> None:
@@ -82,21 +97,50 @@ class AnimatedGradientBackground(QWidget):
         intervals = {"Quality": 33, "Balanced": 50, "Performance": 100}  # ms per frame: ~30/20/10fps
         self._timer.setInterval(intervals.get(mode, 50))
 
+    def _should_animate(self) -> bool:
+        """Whether the shared frame timer should be running — driven by
+        gradient mode OR a particle overlay being active on ANY mode,
+        and always off when reduce motion is on."""
+        if self._reduce_motion:
+            return False
+        return self._mode == "gradient" or self._particle_overlay is not None
+
+    def _sync_timer(self) -> None:
+        """Starts/stops the timer to match _should_animate(), only
+        resetting the animation clock on an actual stopped->running
+        transition — resetting it on every call (even while already
+        running) would visibly jump/restart the animation every time an
+        unrelated setting changed."""
+        should_run = self._should_animate()
+        if should_run and not self._timer.isActive():
+            self._start_time = time.monotonic()
+            self._timer.start()
+        elif not should_run and self._timer.isActive():
+            self._timer.stop()
+
     def set_reduce_motion(self, enabled: bool) -> None:
         """Freezes whatever's currently animating (gradient timer,
-        video playback) without changing the selected background mode
-        — reduce motion is about removing movement, not switching away
-        from the look someone chose."""
+        particle overlay, video playback) without changing the selected
+        background mode — reduce motion is about removing movement, not
+        switching away from the look someone chose."""
         self._reduce_motion = enabled
+        self._sync_timer()
         if enabled:
-            self._timer.stop()
             if self._video_player is not None:
                 self._video_player.pause()
         else:
-            if self._mode == "gradient":
-                self._timer.start()
-            elif self._mode == "video" and self._video_player is not None and self._video_autoplay:
+            if self._mode == "video" and self._video_player is not None and self._video_autoplay:
                 self._video_player.play()
+
+    def set_particle_overlay(self, style: str | None) -> None:
+        """Draws Snow/Rain/Fire ON TOP of whatever the base mode is —
+        works with Solid, Gradient, Image, or Video alike, not just as
+        a Gradient-mode style. Pass None to turn the overlay off."""
+        if style is not None and style not in PARTICLE_STYLES:
+            return
+        self._particle_overlay = style
+        self._sync_timer()
+        self.update()
 
     # -- mode / solid / gradient (unchanged behavior from before) -----------------
 
@@ -109,11 +153,7 @@ class AnimatedGradientBackground(QWidget):
         if mode not in MODES:
             return
         self._mode = mode
-        if mode == "gradient" and not self._reduce_motion:
-            self._start_time = time.monotonic()
-            self._timer.start()
-        else:
-            self._timer.stop()
+        self._sync_timer()
         if mode == "video":
             self._ensure_video_player()
             if self._video_player is not None and self._video_autoplay and not self._reduce_motion:
@@ -249,20 +289,18 @@ class AnimatedGradientBackground(QWidget):
 
     def pause_for_minimize(self) -> None:
         """Called when the window is minimized — pauses video decoding
-        and gradient animation so neither burns CPU/GPU while nothing
-        is visible."""
+        and any animated background (gradient or particle overlay) so
+        neither burns CPU/GPU while nothing is visible."""
         if self._video_player is not None and self._mode == "video":
             self._video_player.pause()
-        if self._mode == "gradient":
-            self._timer.stop()
+        self._timer.stop()
 
     def resume_from_minimize(self) -> None:
         if self._reduce_motion:
             return  # stays paused either way if reduce motion is on
         if self._video_player is not None and self._mode == "video" and self._video_autoplay:
             self._video_player.play()
-        if self._mode == "gradient":
-            self._timer.start()
+        self._sync_timer()
 
     # -- painting -----------------------------------------------------------
 
@@ -293,6 +331,22 @@ class AnimatedGradientBackground(QWidget):
             # always safe to fall back to a flat fill rather than
             # painting nothing at all.
             painter.fillRect(self.rect(), self._bg_color)
+
+        # Particle overlay — Snow/Rain/Fire drawn on top of whatever the
+        # base mode just painted (solid, gradient, image, or video).
+        # Skipped only in the one case where it'd be a pointless exact
+        # duplicate: gradient mode already using that same style.
+        if self._particle_overlay is not None and not (
+            self._mode == "gradient" and self._style == self._particle_overlay
+        ):
+            elapsed = time.monotonic() - self._start_time
+            w, h = max(self.width(), 1), max(self.height(), 1)
+            if self._particle_overlay == "Snow":
+                self._draw_snow_particles(painter, w, h, elapsed)
+            elif self._particle_overlay == "Rain":
+                self._draw_rain_particles(painter, w, h, elapsed)
+            elif self._particle_overlay == "Fire":
+                self._draw_fire_particles(painter, w, h, elapsed)
 
         painter.end()
 
@@ -474,9 +528,15 @@ class AnimatedGradientBackground(QWidget):
             painter.drawEllipse(QPointF(cx, cy), blob_radius, blob_radius)
 
     def _paint_snow(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
-        """Small pale particles drifting slowly downward, looping from
-        top to bottom, with a gentle horizontal sway."""
         painter.fillRect(self.rect(), self._bg_color)
+        self._draw_snow_particles(painter, w, h, elapsed)
+
+    def _draw_snow_particles(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        """Small pale particles drifting slowly downward, looping from
+        top to bottom, with a gentle horizontal sway. Draw-only (no
+        background fill) so this can also be used as an overlay on top
+        of Image/Video/other modes, not just standalone as a Gradient
+        style."""
         painter.setPen(Qt.PenStyle.NoPen)
 
         for i in range(self._SNOW_COUNT):
@@ -493,14 +553,17 @@ class AnimatedGradientBackground(QWidget):
             painter.drawEllipse(QPointF(x, y), size, size)
 
     def _paint_rain(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        painter.fillRect(self.rect(), self._bg_color)
+        self._draw_rain_particles(painter, w, h, elapsed)
+
+    def _draw_rain_particles(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
         """Thin diagonal streaks falling fast, looping from top to
         bottom — same looping mechanism as snow, faster and drawn as
         short lines instead of dots. Fixed pale blue-grey, matching
         how rain actually looks against light — not tinted by the
         theme's accent color, the same way real rain doesn't change
-        color because you're wearing a different shirt."""
-        painter.fillRect(self.rect(), self._bg_color)
-
+        color because you're wearing a different shirt. Draw-only, for
+        the same reuse-as-overlay reason as snow above."""
         pen_color = QColor(174, 194, 224)
         pen_color.setAlphaF(0.4)
         painter.setPen(pen_color)
@@ -515,10 +578,14 @@ class AnimatedGradientBackground(QWidget):
             painter.drawLine(QPointF(x, y), QPointF(x - length * 0.25, y - length))
 
     def _paint_fire(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
+        painter.fillRect(self.rect(), self._bg_color)
+        self._draw_fire_particles(painter, w, h, elapsed)
+
+    def _draw_fire_particles(self, painter: QPainter, w: int, h: int, elapsed: float) -> None:
         """Warm particles rising from the bottom edge, fading out as
         they climb — embers/flicker, confined to the lower portion of
-        the widget rather than filling the whole background."""
-        painter.fillRect(self.rect(), self._bg_color)
+        the widget rather than filling the whole background. Draw-only,
+        for the same reuse-as-overlay reason as snow above."""
         painter.setPen(Qt.PenStyle.NoPen)
 
         fire_band_h = h * 0.6  # particles only rise through the bottom 60%
