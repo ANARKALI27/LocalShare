@@ -415,17 +415,22 @@ QScrollArea > QWidget > QWidget {{
     background-color: {c['bg']};
 }}
 QScrollBar:vertical {{
-    background: transparent;
-    width: 10px;
-    margin: 2px;
+    background: {_hex_to_rgba_string(c['surface'], 0.35)};
+    width: 12px;
+    margin: 2px 2px 2px 0;
+    border-radius: 6px;
 }}
 QScrollBar::handle:vertical {{
-    background: {c['border']};
+    background: {_hex_to_rgba_string(c['border'], 0.9)};
     border-radius: 5px;
-    min-height: 30px;
+    margin: 1px;
+    min-height: 36px;
 }}
 QScrollBar::handle:vertical:hover {{
     background: {c['accent']};
+}}
+QScrollBar::handle:vertical:pressed {{
+    background: {c['accent_hover']};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
@@ -436,17 +441,22 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: none;
 }}
 QScrollBar:horizontal {{
-    background: transparent;
-    height: 10px;
-    margin: 2px;
+    background: {_hex_to_rgba_string(c['surface'], 0.35)};
+    height: 12px;
+    margin: 0 2px 2px 2px;
+    border-radius: 6px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {c['border']};
+    background: {_hex_to_rgba_string(c['border'], 0.9)};
     border-radius: 5px;
-    min-width: 30px;
+    margin: 1px;
+    min-width: 36px;
 }}
 QScrollBar::handle:horizontal:hover {{
     background: {c['accent']};
+}}
+QScrollBar::handle:horizontal:pressed {{
+    background: {c['accent_hover']};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;
