@@ -446,25 +446,17 @@ class MainWindow(QMainWindow):
         self.transparency_slider = QSlider(Qt.Orientation.Horizontal)
         self.transparency_slider.setRange(30, 100)  # never fully invisible — 30% is the floor
         self.transparency_slider.setValue(int(self._surface_alpha * 100))
-        self.transparency_slider.valueChanged.connect(self._set_surface_alpha)
-
-        # -- live preview panel --------------------------------------------------------------
-        self.preview_panel = QFrame()
-        self.preview_panel.setFixedHeight(90)
-        preview_layout = QVBoxLayout(self.preview_panel)
-        preview_layout.setContentsMargins(10, 8, 10, 8)
-        self.preview_title_label = QLabel("LocalShare")
-        self.preview_title_label.setStyleSheet("font-weight: 600; font-size: 13px;")
-        preview_layout.addWidget(self.preview_title_label)
-        preview_row = QHBoxLayout()
-        self.preview_sample_btn = QPushButton("Sample Button")
-        self.preview_sample_btn.setEnabled(False)  # purely illustrative — not a real action
-        preview_row.addWidget(self.preview_sample_btn)
-        preview_row.addStretch()
-        preview_layout.addLayout(preview_row)
-        self.preview_progress = QLabel()
-        self.preview_progress.setFixedHeight(8)
-        preview_layout.addWidget(self.preview_progress)
+        # sliderReleased, not valueChanged: _set_surface_alpha re-applies
+        # the ENTIRE application's stylesheet, which is genuinely
+        # expensive — valueChanged fires continuously while dragging
+        # (potentially dozens of times a second), so wiring it there
+        # was re-running that expensive full-app restyle on every pixel
+        # of drag movement. This is almost certainly what looked like
+        # "delay" — applying once on release is the standard pattern
+        # for exactly this kind of slider.
+        self.transparency_slider.sliderReleased.connect(
+            lambda: self._set_surface_alpha(self.transparency_slider.value())
+        )
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -1225,9 +1217,6 @@ class MainWindow(QMainWindow):
         else:
             self.status_dot.setStyleSheet(f"color: {colors['text_dim']}; font-size: 14px;")
 
-        if hasattr(self, "preview_panel"):
-            self._refresh_live_preview()
-
     def _set_card_radius(self, value: str) -> None:
         self._card_radius = value
         QSettings("LocalShare", "LocalShare").setValue("card_radius", value)
@@ -1264,7 +1253,7 @@ class MainWindow(QMainWindow):
         contained cards should get this.
         """
         blur = CARD_SHADOW_BLUR.get(self._card_shadow, 0)
-        for widget in (self.shared_list, self.preview_panel):
+        for widget in (self.shared_list,):
             if blur > 0:
                 shadow = QGraphicsDropShadowEffect(widget)
                 shadow.setBlurRadius(blur)
@@ -1273,27 +1262,6 @@ class MainWindow(QMainWindow):
                 widget.setGraphicsEffect(shadow)
             else:
                 widget.setGraphicsEffect(None)
-        self._refresh_live_preview()
-
-    def _refresh_live_preview(self) -> None:
-        colors = self.theme_colors
-        radius = CARD_RADIUS.get(self._card_radius, 8)
-        border_width, border_key = CARD_BORDER.get(self._card_border, (1, "border"))
-        border_color = colors[border_key] if border_key != "transparent" else "transparent"
-        self.preview_panel.setStyleSheet(
-            f"background-color: {colors['surface']}; border: {border_width}px solid {border_color}; "
-            f"border-radius: {radius}px;"
-        )
-        self.preview_title_label.setStyleSheet(
-            f"color: {colors['text']}; font-weight: 600; font-size: 13px; background: transparent;"
-        )
-        self.preview_sample_btn.setStyleSheet(
-            f"background-color: {colors['accent']}; color: white; border-radius: {max(radius - 4, 0)}px; "
-            f"padding: 4px 10px; border: none;"
-        )
-        self.preview_progress.setStyleSheet(
-            f"background-color: {colors['accent']}; border-radius: 4px;"
-        )
 
     def _on_theme_selected(self, theme_name: str) -> None:
         if theme_name not in THEMES and theme_name not in self._custom_themes:
@@ -1774,11 +1742,6 @@ class MainWindow(QMainWindow):
         transparency_note.setWordWrap(True)
         transparency_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         layout.addWidget(transparency_note)
-
-        preview_label = QLabel("PREVIEW")
-        preview_label.setObjectName("SectionLabel")
-        layout.addWidget(preview_label)
-        layout.addWidget(self.preview_panel)
 
         updates_label = QLabel("UPDATES")
         updates_label.setObjectName("SectionLabel")
