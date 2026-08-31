@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import asyncio
 import os
 import time
 
@@ -448,13 +449,20 @@ def build_router(
     @router.put("/api/upload/chunk/{upload_id}")
     async def upload_chunk(upload_id: str, request: Request, offset: int = Query(...)) -> dict:
         data = await request.body()
+        loop = asyncio.get_event_loop()
         try:
-            session = resumable_manager.write_chunk(upload_id, offset, data)
+            # The actual disk write is a blocking call — running it via
+            # run_in_executor keeps the event loop free to handle other
+            # requests (other chunks of this same upload arriving
+            # concurrently, or completely unrelated requests like a
+            # download in progress) while this write is in flight,
+            # instead of freezing the whole server for its duration.
+            session = await loop.run_in_executor(None, resumable_manager.write_chunk, upload_id, offset, data)
         except KeyError:
             raise HTTPException(status_code=404, detail="Unknown or expired upload session")
         except ValueError as exc:
-            # 409 Conflict: the client's idea of progress doesn't match the
-            # server's — it should re-check /status and retry from there,
+            # 409 Conflict: this chunk doesn't fit (bad offset/length) —
+            # the client should re-check /status and retry appropriately,
             # not treat this as a fatal error.
             raise HTTPException(status_code=409, detail=str(exc))
         return {"bytes_received": session.bytes_received}

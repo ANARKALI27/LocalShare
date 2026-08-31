@@ -22,6 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from app.transfer.range_tracking import Range, is_fully_covered, merge_range, total_covered
 from app.transfer.upload import resolve_upload_path, unique_destination
 
 
@@ -35,6 +36,7 @@ class UploadSession:
     temp_path: str
     created_at: float = field(default_factory=time.time)
     bytes_received: int = 0
+    covered_ranges: list[Range] = field(default_factory=list)
     finalized: bool = False
 
 
@@ -73,30 +75,42 @@ class ResumableUploadManager:
             return self._sessions.get(session_id)
 
     def write_chunk(self, session_id: str, offset: int, data: bytes) -> UploadSession:
+        """
+        Writes a chunk at an explicit byte offset. Chunks may arrive in
+        any order and may safely overlap (a retried/duplicate chunk is
+        idempotent) — this intentionally does NOT require offset to
+        match "how many bytes so far," unlike the original strictly-
+        sequential version, so the browser can upload several chunks
+        concurrently instead of one at a time. See range_tracking.py
+        for the (separately, exhaustively tested) logic that makes this
+        safe: coverage is tracked as a set of byte ranges, and
+        finalize() refuses to complete unless they form one unbroken
+        span with no gaps.
+        """
         session = self.get(session_id)
         if session is None:
             raise KeyError("unknown upload session")
         if session.finalized:
             raise ValueError("session already finalized")
-        if offset != session.bytes_received:
-            # The client thinks it's further along (or behind) than the
-            # server actually is — e.g. after a resume where a chunk
-            # partially landed. Reject rather than silently overwrite or
-            # leave a gap; the client re-syncs via the status endpoint
-            # and retries from the server's real position.
+        if offset < 0 or offset + len(data) > session.total_size:
             raise ValueError(
-                f"offset mismatch: server has {session.bytes_received} bytes, "
-                f"client sent chunk at offset {offset}"
+                f"chunk at offset {offset} (length {len(data)}) is out of bounds "
+                f"for a {session.total_size}-byte file"
             )
-        if session.bytes_received + len(data) > session.total_size:
-            raise ValueError("chunk would exceed the declared total size")
 
+        # The disk write itself happens without holding the lock — it's
+        # a plain seek+write to this chunk's own byte range via a fresh
+        # file handle, and concurrent chunks target different, non-
+        # overlapping regions of the same file, which is safe to do in
+        # parallel on both POSIX and Windows without extra locking.
+        # Only the shared bookkeeping (the ranges list) needs the lock.
         with open(session.temp_path, "r+b") as f:
             f.seek(offset)
             f.write(data)
 
         with self._lock:
-            session.bytes_received += len(data)
+            session.covered_ranges = merge_range(session.covered_ranges, (offset, offset + len(data)))
+            session.bytes_received = total_covered(session.covered_ranges)
         return session
 
     def finalize(self, session_id: str) -> str:
@@ -109,7 +123,7 @@ class ResumableUploadManager:
         session = self.get(session_id)
         if session is None:
             raise KeyError("unknown upload session")
-        if session.bytes_received != session.total_size:
+        if not is_fully_covered(session.covered_ranges, session.total_size):
             raise ValueError(
                 f"upload incomplete: {session.bytes_received}/{session.total_size} bytes received"
             )

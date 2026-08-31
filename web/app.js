@@ -183,16 +183,26 @@ async function loadListing(item, path) {
 // LANs in per-request overhead.
 const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// How many chunks to have in flight at once. The server now accepts
+// chunks at any offset (not strictly in order), specifically so this
+// can be >1: with only one chunk in flight at a time, network transfer
+// and the server's disk write never overlap, which leaves real
+// throughput on the table. A handful in flight lets those overlap
+// without opening so many connections it works against itself.
+const UPLOAD_CONCURRENCY = 3;
+
 function uploadFingerprintKey(item, path, relativePath, file) {
   return `localshare_upload::${item}::${path}::${relativePath}::${file.size}::${file.lastModified}`;
 }
 
 /**
- * Uploads one file using the chunked resumable protocol. If a matching
- * in-progress upload was left over from a previous attempt (tracked by
- * fingerprint in localStorage), resumes from wherever the SERVER says
- * it actually got to — never trusts the client's own memory of
- * progress, since that's exactly what can be wrong after a crash/reload.
+ * Uploads one file using the chunked resumable protocol, with several
+ * chunks in flight concurrently rather than one at a time. If a
+ * matching in-progress upload was left over from a previous attempt
+ * (tracked by fingerprint in localStorage), resumes from wherever the
+ * SERVER says it actually got to — never trusts the client's own
+ * memory of progress, since that's exactly what can be wrong after a
+ * crash/reload.
  */
 async function uploadFileResumable(file, relativePath, item, path, onProgress) {
   const fpKey = uploadFingerprintKey(item, path, relativePath, file);
@@ -235,41 +245,84 @@ async function uploadFileResumable(file, relativePath, item, path, onProgress) {
     localStorage.setItem(fpKey, uploadId);
   }
 
-  while (bytesReceived < file.size) {
-    const end = Math.min(bytesReceived + UPLOAD_CHUNK_SIZE, file.size);
-    const chunk = file.slice(bytesReceived, end);
+  // Chunk offsets still needing to be sent. Resuming still starts from
+  // the server's last known position as a reasonable default, but
+  // — unlike before — chunks from here on don't need to land in order,
+  // since the server now tracks *which* byte ranges have arrived
+  // rather than requiring one running "next expected offset."
+  const chunkOffsets = [];
+  for (let offset = bytesReceived; offset < file.size; offset += UPLOAD_CHUNK_SIZE) {
+    chunkOffsets.push(offset);
+  }
 
-    let res;
-    try {
-      res = await fetch(`/api/upload/chunk/${uploadId}?offset=${bytesReceived}`, {
-        method: "PUT",
-        body: chunk,
-      });
-    } catch (networkErr) {
-      // network drop mid-chunk — re-check the server's real position and
-      // retry from there rather than failing the whole upload
-      const statusRes = await fetch(`/api/upload/status/${uploadId}`);
-      if (!statusRes.ok) throw new Error("Connection lost and upload session is gone — please retry");
-      const status = await statusRes.json();
-      bytesReceived = status.bytes_received;
-      continue;
-    }
+  let nextIndex = 0;
+  let latestBytesReceived = bytesReceived;
+  let uploadError = null;
 
-    if (res.status === 409) {
-      // offset mismatch — re-sync with server's actual position
-      const statusRes = await fetch(`/api/upload/status/${uploadId}`);
-      const status = await statusRes.json();
-      bytesReceived = status.bytes_received;
-      continue;
-    }
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || `Chunk upload failed (${res.status})`);
-    }
+  async function uploadOneChunk(offset) {
+    const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
+    const chunk = file.slice(offset, end);
 
-    const data = await res.json();
-    bytesReceived = data.bytes_received;
-    if (onProgress) onProgress(bytesReceived, file.size);
+    let attempts = 0;
+    while (true) {
+      attempts++;
+      let res;
+      try {
+        res = await fetch(`/api/upload/chunk/${uploadId}?offset=${offset}`, {
+          method: "PUT",
+          body: chunk,
+        });
+      } catch (networkErr) {
+        // Transient network drop (Wi-Fi hiccup, cable bump) — worth
+        // retrying rather than failing the whole upload, but not
+        // forever if the connection is genuinely gone.
+        if (attempts >= 10) {
+          throw new Error("Connection lost repeatedly — check your network and try again");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Chunk upload failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.bytes_received > latestBytesReceived) {
+        latestBytesReceived = data.bytes_received;
+        if (onProgress) onProgress(latestBytesReceived, file.size);
+      }
+      return;
+    }
+  }
+
+  async function worker() {
+    while (nextIndex < chunkOffsets.length && !uploadError) {
+      const offset = chunkOffsets[nextIndex++];
+      try {
+        await uploadOneChunk(offset);
+      } catch (err) {
+        uploadError = err;
+        return;
+      }
+    }
+  }
+
+  const workerCount = Math.min(UPLOAD_CONCURRENCY, Math.max(chunkOffsets.length, 1));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (uploadError) throw uploadError;
+
+  // Belt-and-suspenders: confirm the server genuinely has every byte
+  // before asking it to finalize, rather than assuming our own view
+  // of "all workers finished" is exactly right.
+  const finalStatusRes = await fetch(`/api/upload/status/${uploadId}`);
+  const finalStatus = await finalStatusRes.json();
+  if (finalStatus.bytes_received < file.size) {
+    throw new Error(
+      `Upload incomplete: ${finalStatus.bytes_received}/${file.size} bytes received`
+    );
   }
 
   const finalizeRes = await fetch(`/api/upload/finalize/${uploadId}`, { method: "POST" });

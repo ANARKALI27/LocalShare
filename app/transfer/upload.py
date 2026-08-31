@@ -8,6 +8,7 @@ chunks.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING
 
@@ -63,13 +64,19 @@ async def save_upload(upload_file: UploadFile, destination: str) -> tuple[str, i
 
     destination = unique_destination(destination)
 
+    loop = asyncio.get_event_loop()
     total = 0
     with open(destination, "wb") as out:
         while True:
             chunk = await upload_file.read(CHUNK_SIZE)
             if not chunk:
                 break
-            out.write(chunk)
+            # Offloaded to a thread — a blocking file.write() call
+            # directly in this async function would freeze the entire
+            # server's event loop for the duration of every write,
+            # stalling unrelated requests (other people's downloads,
+            # other uploads' chunks) while this one file is being saved.
+            await loop.run_in_executor(None, out.write, chunk)
             total += len(chunk)
 
     return destination, total
