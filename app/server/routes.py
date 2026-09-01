@@ -412,6 +412,36 @@ def build_router(
         }
 
     # -- resumable uploads (for large files — see resumable.py) -----------------
+    @router.post("/api/upload/create-folder")
+    def create_empty_folder(
+        item: str = Form(...),
+        path: str = Form(default=""),
+        relative_path: str = Form(...),
+    ) -> dict:
+        """
+        Creates an empty folder — used for folder uploads that include
+        empty subdirectories, which the regular file-chunk upload flow
+        has no way to represent (there's no file to attach a path to).
+        Idempotent: creating a folder that already exists is not an
+        error, same as os.makedirs(..., exist_ok=True).
+        """
+        if not item:
+            raise HTTPException(
+                status_code=400, detail="Choose a shared folder before uploading — can't upload to Home"
+            )
+        target_dir, _name = _resolve_target(share_manager, item, path)
+        if not os.path.isdir(target_dir):
+            raise HTTPException(status_code=400, detail="Upload destination must be a folder")
+        if not relative_path:
+            raise HTTPException(status_code=400, detail="relative_path is required")
+
+        folder_path = resolve_upload_path(target_dir, relative_path)
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Couldn't create folder: {exc}")
+        return {"created": True}
+
     @router.post("/api/upload/start")
     def start_resumable_upload(
         item: str = Form(...),

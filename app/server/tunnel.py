@@ -129,6 +129,18 @@ class TunnelHandle:
                 "already running before the install finished."
             )
 
+        popen_kwargs = {}
+        if platform.system() == "Windows":
+            # Without this, launching a console app (cloudflared.exe)
+            # from this windowed GUI app (which has no console of its
+            # own) causes Windows to auto-allocate a NEW visible
+            # console window for it — that's the "terminal window"
+            # that was appearing. Closing that window kills the
+            # process running inside it, which is exactly why the
+            # tunnel died (and anyone using the link got Cloudflare's
+            # error 1033 — "tunnel unavailable") when it was closed.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
             process = subprocess.Popen(
                 [cloudflared_path, "tunnel", "--url", f"http://localhost:{local_port}"],
@@ -136,6 +148,7 @@ class TunnelHandle:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                **popen_kwargs,
             )
         except OSError as exc:
             raise RuntimeError(f"Couldn't start cloudflared: {exc}") from exc

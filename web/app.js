@@ -381,6 +381,126 @@ async function uploadFiles(fileList) {
 uploadFilesInput.addEventListener("change", (e) => uploadFiles(e.target.files));
 uploadFolderInput.addEventListener("change", (e) => uploadFiles(e.target.files));
 
+// -- folder upload, including genuinely empty subfolders -----------------------------------------------------------
+//
+// The plain <input webkitdirectory> approach above has a hard browser
+// limitation: it only ever reports actual FILES with their relative
+// path attached — an empty subfolder produces literally no entry at
+// all, so there's no way to detect or upload one through it. Where
+// available (Chromium-based browsers), the File System Access API's
+// showDirectoryPicker() gives real directory handles that CAN be
+// walked recursively and DO reveal empty subfolders, so we prefer it
+// and fall back to the old input for browsers that don't support it
+// (Firefox, Safari) — same file-upload behavior either way, the only
+// difference is whether empty folders come along for the ride.
+
+async function walkDirectoryHandle(dirHandle, relativePrefix, files, emptyFolders) {
+  let hasEntries = false;
+  for await (const [name, handle] of dirHandle.entries()) {
+    hasEntries = true;
+    const entryPath = relativePrefix ? `${relativePrefix}/${name}` : name;
+    if (handle.kind === "file") {
+      const file = await handle.getFile();
+      files.push({ file, relativePath: entryPath });
+    } else if (handle.kind === "directory") {
+      await walkDirectoryHandle(handle, entryPath, files, emptyFolders);
+    }
+  }
+  if (!hasEntries && relativePrefix) {
+    emptyFolders.push(relativePrefix);
+  }
+}
+
+async function createEmptyFolder(relativePath, item, path) {
+  const form = new FormData();
+  form.append("item", item);
+  form.append("path", path);
+  form.append("relative_path", relativePath);
+  const res = await fetch("/api/upload/create-folder", { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `Couldn't create folder "${relativePath}" (${res.status})`);
+  }
+}
+
+async function uploadFolderViaPicker() {
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker();
+  } catch (err) {
+    return; // user cancelled the picker — not an error
+  }
+
+  const files = [];
+  const emptyFolders = [];
+  await walkDirectoryHandle(dirHandle, dirHandle.name, files, emptyFolders);
+
+  if (files.length === 0 && emptyFolders.length === 0) {
+    uploadStatusEl.textContent = "That folder is empty — nothing to upload.";
+    setTimeout(() => { uploadStatusEl.textContent = ""; }, 6000);
+    return;
+  }
+
+  uploadFilesInput.disabled = true;
+  uploadFolderInput.disabled = true;
+
+  let succeeded = 0;
+  const failures = [];
+
+  // Empty folders first — if a file later needs one of these as its
+  // parent directory, the upload endpoint already creates parent dirs
+  // itself, so order between the two groups doesn't actually matter
+  // for correctness, just for a sensible-looking progress readout.
+  for (let i = 0; i < emptyFolders.length; i++) {
+    const relativePath = emptyFolders[i];
+    try {
+      uploadStatusEl.textContent = `Creating empty folder ${i + 1}/${emptyFolders.length}: ${relativePath}`;
+      await createEmptyFolder(relativePath, currentBrowseItem, currentBrowsePath);
+      succeeded++;
+    } catch (err) {
+      failures.push(`${relativePath}: ${err.message}`);
+    }
+  }
+
+  for (let i = 0; i < files.length; i++) {
+    const { file, relativePath } = files[i];
+    try {
+      await uploadFileResumable(file, relativePath, currentBrowseItem, currentBrowsePath, (sent, total) => {
+        const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
+        uploadStatusEl.textContent = `Uploading ${i + 1}/${files.length}: ${file.name} — ${pct}%`;
+      });
+      succeeded++;
+    } catch (err) {
+      failures.push(`${file.name}: ${err.message}`);
+    }
+  }
+
+  const totalItems = files.length + emptyFolders.length;
+  uploadStatusEl.textContent =
+    failures.length > 0
+      ? `Uploaded ${succeeded}/${totalItems}, ${failures.length} failed`
+      : `Uploaded ${succeeded} item${succeeded > 1 ? "s" : ""} ✓`;
+  if (failures.length > 0) {
+    console.error("Upload failures:", failures);
+  }
+
+  await loadListing(currentBrowseItem, currentBrowsePath);
+
+  uploadFilesInput.disabled = false;
+  uploadFolderInput.disabled = false;
+}
+
+const uploadFolderLabel = document.getElementById("upload-folder-label");
+if (window.showDirectoryPicker) {
+  uploadFolderLabel.addEventListener("click", (e) => {
+    e.preventDefault(); // skip the plain <input webkitdirectory> picker — use the richer API instead
+    uploadFolderViaPicker();
+  });
+}
+// If showDirectoryPicker isn't available, no listener is added here,
+// and clicking the label falls through to its native behavior —
+// opening the hidden <input webkitdirectory> exactly as before.
+
 // -- hover previews -----------------------------------------------------------
 
 const previewPanelEl = document.getElementById("preview-panel");
