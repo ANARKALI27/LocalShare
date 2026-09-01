@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QGraphicsPixmapItem,
     QGraphicsScene,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -358,7 +359,9 @@ class MainWindow(QMainWindow):
         # -- image sub-panel --------------------------------------------------------------
         self.choose_image_btn = HoverGlowButton("Choose Image…", glow_color=self.theme_colors["accent"])
         self.choose_image_btn.clicked.connect(self._choose_background_image)
-        self.image_path_label = QLabel(os.path.basename(_persisted_image_path) if _persisted_image_path else "None")
+        self.image_path_label = QLabel("None")
+        if _persisted_image_path:
+            self._set_elided_label(self.image_path_label, os.path.basename(_persisted_image_path))
         self.image_position_combo = QComboBox()
         self.image_position_combo.addItems(["Center", "Top", "Bottom", "Left", "Right"])
         self.image_position_combo.setCurrentText(_persisted_image_position)
@@ -379,7 +382,9 @@ class MainWindow(QMainWindow):
         # -- video sub-panel --------------------------------------------------------------
         self.choose_video_btn = HoverGlowButton("Choose Video…", glow_color=self.theme_colors["accent"])
         self.choose_video_btn.clicked.connect(self._choose_background_video)
-        self.video_path_label = QLabel(os.path.basename(_persisted_video_path) if _persisted_video_path else "None")
+        self.video_path_label = QLabel("None")
+        if _persisted_video_path:
+            self._set_elided_label(self.video_path_label, os.path.basename(_persisted_video_path))
         self.video_loop_checkbox = QCheckBox("Loop video")
         self.video_loop_checkbox.setChecked(_persisted_video_loop)
         self.video_mute_checkbox = QCheckBox("Mute audio")
@@ -1258,6 +1263,17 @@ class MainWindow(QMainWindow):
         QSettings("LocalShare", "LocalShare").setValue("surface_alpha", self._surface_alpha)
         self._apply_theme()
 
+    def _set_elided_label(self, label: QLabel, full_text: str, max_width: int = 220) -> None:
+        """Truncates long text (e.g. a filename) with an ellipsis so it
+        never forces a row to overflow horizontally, while keeping the
+        full text available on hover — used for background image/video
+        filenames, which can be long and were previously a real cause
+        of the Settings dialog needing horizontal scrolling."""
+        metrics = label.fontMetrics()
+        elided = metrics.elidedText(full_text, Qt.TextElideMode.ElideMiddle, max_width)
+        label.setText(elided)
+        label.setToolTip(full_text)
+
     def _set_glass_effect(self, value: str) -> None:
         self._glass_effect = value
         QSettings("LocalShare", "LocalShare").setValue("glass_effect", value)
@@ -1424,7 +1440,7 @@ class MainWindow(QMainWindow):
             )
             return
         self._bg_image_path = path
-        self.image_path_label.setText(os.path.basename(path))
+        self._set_elided_label(self.image_path_label, os.path.basename(path))
         QSettings("LocalShare", "LocalShare").setValue("image_path", path)
         if getattr(self, "_glass_effect", "Off") != "Off":
             self._refresh_glass_backdrop()
@@ -1467,7 +1483,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Couldn't load video", message)
             return
         self._bg_video_path = path
-        self.video_path_label.setText(os.path.basename(path))
+        self._set_elided_label(self.video_path_label, os.path.basename(path))
         QSettings("LocalShare", "LocalShare").setValue("video_path", path)
         if getattr(self, "_glass_effect", "Off") != "Off":
             # For video specifically, the first captured frame may not
@@ -1706,7 +1722,9 @@ class MainWindow(QMainWindow):
         theme_row.addWidget(self.theme_combo)
         layout.addLayout(theme_row)
 
-        theme_actions_row = QHBoxLayout()
+        theme_actions_grid = QGridLayout()
+        theme_actions_grid.setHorizontalSpacing(10)
+        theme_actions_grid.setVerticalSpacing(6)
         create_theme_btn = HoverGlowButton("+ Create Theme", glow_color=self.theme_colors["accent"])
         create_theme_btn.clicked.connect(self._open_custom_theme_dialog)
         delete_theme_btn = HoverGlowButton("🗑 Delete", glow_color=self.theme_colors["accent"])
@@ -1715,20 +1733,24 @@ class MainWindow(QMainWindow):
         export_theme_btn.clicked.connect(self._export_current_theme)
         import_theme_btn = HoverGlowButton("Import…", glow_color=self.theme_colors["accent"])
         import_theme_btn.clicked.connect(self._import_theme)
-        theme_actions_row.addWidget(create_theme_btn)
-        theme_actions_row.addWidget(delete_theme_btn)
-        theme_actions_row.addStretch()
-        theme_actions_row.addWidget(export_theme_btn)
-        theme_actions_row.addWidget(import_theme_btn)
-        layout.addLayout(theme_actions_row)
+        # 2 columns — wraps into a 2x2 grid instead of a single row
+        # that overflows/needs horizontal scrolling in a narrow dialog
+        theme_actions_grid.addWidget(create_theme_btn, 0, 0)
+        theme_actions_grid.addWidget(delete_theme_btn, 0, 1)
+        theme_actions_grid.addWidget(export_theme_btn, 1, 0)
+        theme_actions_grid.addWidget(import_theme_btn, 1, 1)
+        layout.addLayout(theme_actions_grid)
         self._theme_action_buttons = [create_theme_btn, delete_theme_btn, export_theme_btn, import_theme_btn]
 
-        accent_swatch_row = QHBoxLayout()
-        accent_swatch_row.addWidget(QLabel("Accent color"))
-        accent_swatch_row.addStretch()
-        for swatch in self.accent_preset_buttons:
-            accent_swatch_row.addWidget(swatch)
-        layout.addLayout(accent_swatch_row)
+        accent_label = QLabel("Accent color")
+        layout.addWidget(accent_label)
+        accent_swatch_grid = QGridLayout()
+        accent_swatch_grid.setHorizontalSpacing(8)
+        accent_swatch_grid.setVerticalSpacing(6)
+        for i, swatch in enumerate(self.accent_preset_buttons):
+            accent_swatch_grid.addWidget(swatch, i // 5, i % 5)  # 5 columns — wraps into 2 rows of 5
+        accent_swatch_grid.setColumnStretch(5, 1)  # keeps swatches left-aligned instead of spreading out
+        layout.addLayout(accent_swatch_grid)
 
         accent_custom_row = QHBoxLayout()
         accent_custom_row.addStretch()
@@ -1739,10 +1761,14 @@ class MainWindow(QMainWindow):
         # -- Background page --------------------------------------------------------------
         layout = add_page("Background")
 
-        bg_mode_row = QHBoxLayout()
-        for btn in (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio):
-            bg_mode_row.addWidget(btn)
-        layout.addLayout(bg_mode_row)
+        bg_mode_grid = QGridLayout()
+        bg_mode_grid.setHorizontalSpacing(16)
+        bg_mode_grid.setVerticalSpacing(6)
+        mode_buttons = (self.bg_mode_solid_radio, self.bg_mode_gradient_radio, self.bg_mode_image_radio, self.bg_mode_video_radio)
+        for i, btn in enumerate(mode_buttons):
+            bg_mode_grid.addWidget(btn, i // 2, i % 2)  # 2 columns — wraps into a 2x2 grid instead
+            # of a single row that overflows/needs horizontal scrolling in a narrow dialog
+        layout.addLayout(bg_mode_grid)
 
         particle_overlay_row = QHBoxLayout()
         particle_overlay_row.addWidget(QLabel("Overlay effect"))
@@ -1924,11 +1950,13 @@ class MainWindow(QMainWindow):
         self.perf_quality_radio.toggled.connect(lambda c: c and self._set_performance_mode("Quality"))
         self.perf_balanced_radio.toggled.connect(lambda c: c and self._set_performance_mode("Balanced"))
         self.perf_performance_radio.toggled.connect(lambda c: c and self._set_performance_mode("Performance"))
-        perf_row = QHBoxLayout()
-        perf_row.addWidget(self.perf_quality_radio)
-        perf_row.addWidget(self.perf_balanced_radio)
-        perf_row.addWidget(self.perf_performance_radio)
-        layout.addLayout(perf_row)
+        perf_grid = QGridLayout()
+        perf_grid.setHorizontalSpacing(16)
+        perf_grid.setVerticalSpacing(6)
+        perf_grid.addWidget(self.perf_quality_radio, 0, 0)
+        perf_grid.addWidget(self.perf_balanced_radio, 0, 1)
+        perf_grid.addWidget(self.perf_performance_radio, 1, 0)
+        layout.addLayout(perf_grid)
         layout.addStretch()
 
         # Apply restored state now — the toggled signals above only
