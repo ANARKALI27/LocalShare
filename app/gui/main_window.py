@@ -250,15 +250,40 @@ class MainWindow(QMainWindow):
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
-        # Wrapped in a scroll area so the window stays genuinely
-        # resizable in both directions: if it's ever made smaller than
-        # the content needs (a lot has been added to this window over
-        # time — WebDAV status, QR code, update checker, etc.), a
-        # scrollbar appears instead of anything getting clipped or cut off.
+        # App-wide sidebar navigation (Dashboard/Transfers/Received/
+        # Nearby Devices/Settings/History), same proven sidebar +
+        # QStackedWidget pattern already used for the Settings dialog.
+        # Everything that used to be the whole window's content is now
+        # specifically the "Dashboard" page — built completely
+        # unchanged below, just placed into the stack instead of set
+        # directly as the central widget, to keep this restructuring
+        # as low-risk as possible against a lot of already-working code.
+        outer = QWidget()
+        self.setCentralWidget(outer)
+        outer_layout = QHBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        app_nav = QListWidget()
+        app_nav.setObjectName("AppNav")
+        app_nav.setFixedWidth(180)
+        app_nav.setFrameShape(QFrame.Shape.NoFrame)
+        outer_layout.addWidget(app_nav)
+
+        app_pages = QStackedWidget()
+        outer_layout.addWidget(app_pages, stretch=1)
+        self.app_nav = app_nav
+        self.app_pages = app_pages
+
+        for page_name in ("Dashboard", "Transfers", "Received", "Nearby Devices", "Settings", "History"):
+            app_nav.addItem(page_name)
+
+        # -- Dashboard page: wraps the existing scroll_area/central/root
+        # content, completely unchanged from here down --
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.setCentralWidget(scroll_area)
+        app_pages.addWidget(scroll_area)
 
         central = AnimatedGradientBackground()
         central.set_colors(self.theme_colors["bg"], self.theme_colors["accent"])
@@ -281,6 +306,21 @@ class MainWindow(QMainWindow):
         title_row.addWidget(version_label)
 
         title_row.addStretch()
+
+        _persisted_ui_layout = QSettings("LocalShare", "LocalShare").value("ui_layout_mode", "Vertical")
+        if _persisted_ui_layout not in ("Vertical", "Landscape"):
+            _persisted_ui_layout = "Vertical"
+        self._ui_layout_mode = _persisted_ui_layout
+        self.layout_toggle_btn = HoverGlowButton(
+            "🖥️ Landscape" if _persisted_ui_layout == "Vertical" else "📱 Vertical",
+            glow_color=self.theme_colors["accent"],
+        )
+        self.layout_toggle_btn.setToolTip(
+            "Switch between the sidebar-based layout (Dashboard/Transfers/Received/"
+            "Nearby Devices/Settings/History) and the original single-page layout."
+        )
+        self.layout_toggle_btn.clicked.connect(self._toggle_ui_layout_mode)
+        title_row.addWidget(self.layout_toggle_btn)
 
         self.settings_btn = HoverGlowButton("⚙️ Settings", glow_color=self.theme_colors["accent"])
         self.settings_btn.setToolTip("Theme, accent color, and background options")
@@ -697,6 +737,72 @@ class MainWindow(QMainWindow):
 
         self._build_settings_dialog()
         self._apply_card_style_to_widgets()
+
+        # -- stub pages for features not built yet (their own separate
+        # phases — Nearby Devices needs real network discovery, live
+        # Transfers needs the server to report progress back to this
+        # GUI, neither of which exists yet) — added now so the full
+        # navigation skeleton is complete and testable --
+        self.app_pages.addWidget(self._build_stub_page(
+            "Transfers", "Live transfer progress with pause/cancel is coming in a future update."
+        ))
+        self.app_pages.addWidget(self._build_stub_page(
+            "Received", "A dedicated view of received files is coming in a future update."
+        ))
+        self.app_pages.addWidget(self._build_stub_page(
+            "Nearby Devices", "Automatic device discovery on your network is coming in a future update."
+        ))
+        # "Settings" (index 4) opens the existing popup dialog rather
+        # than embedding inline — a placeholder page still needs to
+        # exist at this stack index so it lines up with app_nav's rows
+        self.app_pages.addWidget(self._build_stub_page("Settings", "Opening Settings…"))
+        self.app_pages.addWidget(self._build_stub_page(
+            "History", "A transfer history log is coming in a future update."
+        ))
+
+        self.app_nav.currentRowChanged.connect(self._on_app_nav_changed)
+        self.app_nav.setCurrentRow(0)
+        self._apply_ui_layout_mode(self._ui_layout_mode)
+
+    def _build_stub_page(self, title: str, description: str) -> QWidget:
+        """A placeholder page for features not built yet — keeps the
+        navigation complete and testable now, with real functionality
+        to follow as its own separate phase."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading = QLabel(title)
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc = QLabel(description)
+        desc.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
+        desc.setMaximumWidth(320)
+        layout.addWidget(heading)
+        layout.addWidget(desc)
+        return page
+
+    def _on_app_nav_changed(self, row: int) -> None:
+        self.app_pages.setCurrentIndex(row)
+        if row == 4:  # "Settings" — open the existing popup dialog, then snap back
+            self._open_settings_dialog()
+            self.app_nav.setCurrentRow(0)
+
+    def _toggle_ui_layout_mode(self) -> None:
+        new_mode = "Landscape" if self._ui_layout_mode == "Vertical" else "Vertical"
+        self._apply_ui_layout_mode(new_mode)
+        QSettings("LocalShare", "LocalShare").setValue("ui_layout_mode", new_mode)
+
+    def _apply_ui_layout_mode(self, mode: str) -> None:
+        self._ui_layout_mode = mode
+        if mode == "Vertical":
+            self.app_nav.hide()
+            self.app_pages.setCurrentIndex(0)  # force Dashboard — the original single-page layout
+            self.layout_toggle_btn.setText("🖥️ Landscape")
+        else:
+            self.app_nav.show()
+            self.layout_toggle_btn.setText("📱 Vertical")
 
     # -- drop / browse handlers -----------------------------------------------------------
     def _on_paths_dropped(self, paths: list[str]) -> None:
