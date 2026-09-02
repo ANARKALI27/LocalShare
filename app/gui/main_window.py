@@ -1508,6 +1508,91 @@ class MainWindow(QMainWindow):
         if getattr(self, "_glass_effect", "Off") != "Off":
             self._refresh_glass_backdrop()
 
+    def _reset_appearance(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Reset appearance?",
+            "This restores LocalShare's default appearance — theme, accent color, "
+            "background, cards, motion, and performance settings all revert to their "
+            "defaults. Custom themes you've saved are NOT deleted. This can't be undone.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        settings = QSettings("LocalShare", "LocalShare")
+
+        # -- reset the actual state + persisted settings first — this is
+        # the part that's guaranteed to happen regardless of whether any
+        # individual widget's displayed value technically changes below --
+        self._current_theme_name = "Default Dark"
+        self._custom_accent = None
+        self._card_radius = "Medium"
+        self._card_border = "Subtle"
+        self._card_shadow = "None"
+        self._surface_alpha = 1.0
+        self._glass_effect = "Off"
+        self._bg_image_path = None
+        self._bg_video_path = None
+
+        for key, value in [
+            ("theme_name", "Default Dark"), ("custom_accent", ""),
+            ("card_radius", "Medium"), ("card_border", "Subtle"), ("card_shadow", "None"),
+            ("surface_alpha", 1.0), ("glass_effect", "Off"),
+            ("background_mode", "solid"), ("particle_overlay", "None"), ("gradient_style", STYLES[0]),
+            ("image_path", ""), ("video_path", ""),
+            ("image_position", "Center"), ("image_scaling", "Fill"),
+            ("image_opacity", 1.0), ("overlay_opacity", 0.35),
+            ("video_loop", True), ("video_autoplay", True),
+            ("video_opacity", 1.0), ("video_speed", 1.0),
+            ("reduce_motion", False), ("performance_mode", "Balanced"),
+        ]:
+            settings.setValue(key, value)
+
+        # -- sync widget appearances to match (cosmetic; the actual
+        # re-application happens explicitly below regardless) --
+        self.theme_combo.setCurrentText("Default Dark")
+        self.card_radius_combo.setCurrentText("Medium")
+        self.card_border_combo.setCurrentText("Subtle")
+        self.card_shadow_combo.setCurrentText("None")
+        self.glass_effect_combo.setCurrentText("Off")
+        self.gradient_style_combo.setCurrentText(STYLES[0])
+        self.particle_overlay_combo.setCurrentText("None")
+        self.image_position_combo.setCurrentText("Center")
+        self.image_scaling_combo.setCurrentText("Fill")
+        self.bg_mode_solid_radio.setChecked(True)
+        self.perf_balanced_radio.setChecked(True)
+        self.reduce_motion_checkbox.setChecked(False)
+        self.transparency_slider.setValue(100)
+        self.image_opacity_slider.setValue(100)
+        self.overlay_opacity_slider.setValue(35)
+        self.video_loop_checkbox.setChecked(True)
+        self.video_autoplay_checkbox.setChecked(True)
+        self.video_opacity_slider.setValue(100)
+        self.video_speed_slider.setValue(100)
+        self.image_path_label.setText("None")
+        self.image_path_label.setToolTip("")
+        self.video_path_label.setText("None")
+        self.video_path_label.setToolTip("")
+
+        # -- explicitly re-apply everything — guaranteed to take effect
+        # even for values that were already at their default and so
+        # wouldn't have fired a change signal from the widget updates above --
+        self.gradient_background.set_mode("solid")
+        self.gradient_background.set_particle_overlay(None)
+        self.gradient_background.set_style(STYLES[0])
+        self.gradient_background.set_image(None, "Center", "Fill", 1.0, 0.35)
+        self.gradient_background.set_video(None, True, True, True, 1.0, 1.0)
+        self.gradient_background.set_performance_mode("Balanced")
+        self.gradient_background.set_reduce_motion(False)
+        hover_button_module.ANIMATION_DURATION_MS = 180
+        self._refresh_background_subpanel_visibility("solid")
+        self._apply_theme()
+        self._apply_card_style_to_widgets()
+
+        QMessageBox.information(self, "Appearance reset", "Default appearance restored.")
+
     def _delete_current_theme(self) -> None:
         name = self._current_theme_name
         if name not in self._custom_themes:
@@ -1756,6 +1841,21 @@ class MainWindow(QMainWindow):
         accent_custom_row.addStretch()
         accent_custom_row.addWidget(self.accent_color_btn)
         layout.addLayout(accent_custom_row)
+
+        reset_appearance_row = QHBoxLayout()
+        reset_appearance_btn = HoverGlowButton("Reset Appearance", glow_color=self.theme_colors["accent"])
+        reset_appearance_btn.clicked.connect(self._reset_appearance)
+        reset_appearance_row.addWidget(reset_appearance_btn)
+        reset_appearance_row.addStretch()
+        layout.addLayout(reset_appearance_row)
+        reset_appearance_note = QLabel(
+            "Restores theme, accent, background, cards, motion, and performance settings "
+            "to their defaults — everything on the Appearance, Background, and Effects pages."
+        )
+        reset_appearance_note.setWordWrap(True)
+        reset_appearance_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(reset_appearance_note)
+        self._theme_action_buttons.append(reset_appearance_btn)
         layout.addStretch()
 
         # -- Background page --------------------------------------------------------------
