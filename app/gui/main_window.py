@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import socket
 import tempfile
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QSettings, QThread, QTimer, QUrl, Signal
@@ -73,6 +74,7 @@ from app.gui.update_checker import (
 )
 from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
+from app.network.discovery_service import DeviceDiscoveryService
 from app.server.tunnel import TunnelHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
@@ -220,6 +222,18 @@ class MainWindow(QMainWindow):
         self.server_handle = ServerHandle(self.share_manager, self.access_control)
         self.webdav_handle = WebDavHandle(self.share_manager)
         self.tunnel_handle = TunnelHandle()
+        try:
+            device_name = socket.gethostname()
+        except OSError:
+            device_name = "LocalShare"
+        self.discovery_service = DeviceDiscoveryService(
+            name=device_name,
+            version=APP_VERSION,
+            # Only announces itself while actually sharing something —
+            # a device just sitting idle with nothing shared has
+            # nothing useful for a "nearby device" to connect to.
+            get_address=lambda: self.server_handle.address if self.server_handle.is_running else None,
+        )
         self._start_worker: _ServerStartWorker | None = None
         self._stop_worker: _ServerStopWorker | None = None
         self._tunnel_worker: _TunnelStartWorker | None = None
@@ -247,6 +261,12 @@ class MainWindow(QMainWindow):
         # Slight delay so this doesn't compete with the splash screen /
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
+
+        self.discovery_service.start()
+        self._nearby_devices_timer = QTimer(self)
+        self._nearby_devices_timer.setInterval(3000)
+        self._nearby_devices_timer.timeout.connect(self._refresh_nearby_devices)
+        self._nearby_devices_timer.start()
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
@@ -749,9 +769,7 @@ class MainWindow(QMainWindow):
         self.app_pages.addWidget(self._build_stub_page(
             "Received", "A dedicated view of received files is coming in a future update."
         ))
-        self.app_pages.addWidget(self._build_stub_page(
-            "Nearby Devices", "Automatic device discovery on your network is coming in a future update."
-        ))
+        self.app_pages.addWidget(self._build_nearby_devices_page())
         # "Settings" (index 4) opens the existing popup dialog rather
         # than embedding inline — a placeholder page still needs to
         # exist at this stack index so it lines up with app_nav's rows
@@ -782,6 +800,56 @@ class MainWindow(QMainWindow):
         layout.addWidget(heading)
         layout.addWidget(desc)
         return page
+
+    def _build_nearby_devices_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        heading = QLabel("Nearby Devices")
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Other LocalShare instances on your network, found automatically — no need to "
+            "type in an IP address. Only shows devices that currently have something shared "
+            "(Start Sharing running); a device just sitting idle doesn't announce itself."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(note)
+
+        self.nearby_devices_list = QListWidget()
+        layout.addWidget(self.nearby_devices_list, stretch=1)
+
+        self.nearby_devices_empty_label = QLabel("No other devices found yet…")
+        self.nearby_devices_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.nearby_devices_empty_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        layout.addWidget(self.nearby_devices_empty_label)
+
+        self.nearby_devices_list.itemDoubleClicked.connect(self._open_nearby_device)
+        return page
+
+    def _refresh_nearby_devices(self) -> None:
+        if not hasattr(self, "nearby_devices_list") or self.discovery_service is None:
+            return
+        devices = self.discovery_service.registry.active_devices()
+
+        self.nearby_devices_list.clear()
+        for device in devices:
+            item = QListWidgetItem(f"🖥️  {device['name']}  —  {device['address']}")
+            item.setData(Qt.ItemDataRole.UserRole, device["address"])
+            item.setToolTip(f"Double-click to open {device['address']} in your browser")
+            self.nearby_devices_list.addItem(item)
+
+        self.nearby_devices_empty_label.setVisible(len(devices) == 0)
+        self.nearby_devices_list.setVisible(len(devices) > 0)
+
+    def _open_nearby_device(self, item: QListWidgetItem) -> None:
+        address = item.data(Qt.ItemDataRole.UserRole)
+        if address:
+            QDesktopServices.openUrl(QUrl(f"http://{address}"))
 
     def _on_app_nav_changed(self, row: int) -> None:
         self.app_pages.setCurrentIndex(row)
@@ -2387,4 +2455,6 @@ class MainWindow(QMainWindow):
             self.webdav_handle.stop()
         if self.tunnel_handle.is_running:
             self.tunnel_handle.stop()
+        if self.discovery_service.is_running:
+            self.discovery_service.stop()
         event.accept()
