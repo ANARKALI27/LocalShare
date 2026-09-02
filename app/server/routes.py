@@ -26,6 +26,7 @@ from app.paths import WEB_DIR
 from app.server.auth import AccessControl
 from app.server.auth_middleware import COOKIE_NAME
 from app.server.messages import MessageStore, Attachment
+from app.server.transfers import TransferRegistry
 from app.version import APP_VERSION
 from app.server.security import PathSecurityError, safe_join
 from app.state import ShareManager
@@ -98,13 +99,45 @@ def _resolve_target(share_manager: ShareManager, item_id: str, rel_path: str) ->
     return target, segments[-1]
 
 
-def _file_stream_response(request: Request, target: str, name: str, inline: bool) -> StreamingResponse:
+def _track_transfer_progress(
+    chunks, transfer_registry: TransferRegistry, transfer_id: str, start_bytes: int = 0
+):
+    """
+    Wraps an existing chunk iterator (from stream_file/stream_file_range,
+    unmodified) to report cumulative progress into the transfer
+    registry as each chunk passes through, and to stop early if the
+    transfer's been cancelled — without needing to touch the streaming
+    functions themselves at all.
+    """
+    sent = start_bytes
+    try:
+        for chunk in chunks:
+            if transfer_registry.is_cancelled(transfer_id):
+                break
+            sent += len(chunk)
+            transfer_registry.update_progress(transfer_id, sent)
+            yield chunk
+    finally:
+        transfer_registry.finish_transfer(transfer_id)
+
+
+def _file_stream_response(
+    request: Request,
+    target: str,
+    name: str,
+    inline: bool,
+    transfer_registry: TransferRegistry | None = None,
+) -> StreamingResponse:
     """
     Shared logic for /download and /preview: serves a file either as an
     attachment (forces download) or inline (browser renders it), with
     HTTP Range support in both cases — Range is what lets a <video> tag
     seek/scrub smoothly instead of re-downloading from the start, and
     lets download managers resume.
+
+    transfer_registry is optional and only passed for real downloads
+    (not previews) — hover-preview/thumbnail requests are typically
+    small and frequent, and would just clutter the Transfers page.
     """
     try:
         size = os.path.getsize(target)
@@ -123,19 +156,31 @@ def _file_stream_response(request: Request, target: str, name: str, inline: bool
         "Accept-Ranges": "bytes",
     }
 
+    client_address = request.client.host if request.client else ""
+    transfer_id = None
+    if transfer_registry is not None:
+        transfer_id = transfer_registry.start_transfer("download", name, size, client_address)
+        headers["X-Transfer-Id"] = transfer_id
+
     if byte_range is not None:
         start, end = byte_range
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(end - start + 1)
+        chunks = stream_file_range(target, start, end)
+        if transfer_id is not None:
+            chunks = _track_transfer_progress(chunks, transfer_registry, transfer_id, start_bytes=start)
         return StreamingResponse(
-            stream_file_range(target, start, end),
+            chunks,
             status_code=206,
             media_type=media_type,
             headers=headers,
         )
 
     headers["Content-Length"] = str(size)
-    return StreamingResponse(stream_file(target), media_type=media_type, headers=headers)
+    chunks = stream_file(target)
+    if transfer_id is not None:
+        chunks = _track_transfer_progress(chunks, transfer_registry, transfer_id)
+    return StreamingResponse(chunks, media_type=media_type, headers=headers)
 
 
 def build_router(
@@ -143,6 +188,7 @@ def build_router(
     message_store: MessageStore,
     resumable_manager: ResumableUploadManager,
     access_control: AccessControl,
+    transfer_registry: TransferRegistry,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -332,10 +378,10 @@ def build_router(
             raise HTTPException(
                 status_code=400, detail="This is a folder — use /download-zip instead"
             )
-        return _file_stream_response(request, target, name, inline=False)
+        return _file_stream_response(request, target, name, inline=False, transfer_registry=transfer_registry)
 
     @router.get("/download-zip")
-    def download_zip(item: str = Query(...), path: str = Query(default="")) -> StreamingResponse:
+    def download_zip(request: Request, item: str = Query(...), path: str = Query(default="")) -> StreamingResponse:
         target, name = _resolve_target(share_manager, item, path)
         if not os.path.isdir(target):
             raise HTTPException(status_code=400, detail="This is a file — use /download instead")
@@ -347,8 +393,12 @@ def build_router(
             "Content-Disposition": f'attachment; filename="{name}.zip"',
             "Content-Length": str(zip_size),
         }
+        client_address = request.client.host if request.client else ""
+        transfer_id = transfer_registry.start_transfer("download", f"{name}.zip", zip_size, client_address)
+        headers["X-Transfer-Id"] = transfer_id
+        chunks = _track_transfer_progress(stream_file(zip_path), transfer_registry, transfer_id)
         return StreamingResponse(
-            stream_file(zip_path),
+            chunks,
             media_type="application/zip",
             headers=headers,
             background=BackgroundTask(cleanup_temp_file, zip_path),
@@ -359,6 +409,7 @@ def build_router(
     # -- uploads -----------------------------------------------------------
     @router.post("/upload")
     async def upload(
+        request: Request,
         item: str = Form(...),
         path: str = Form(default=""),
         relative_paths: str = Form(default="[]"),
@@ -378,6 +429,7 @@ def build_router(
         except (json.JSONDecodeError, TypeError):
             rel_path_list = []
 
+        client_address = request.client.host if request.client else ""
         results = []
         for idx, upload_file in enumerate(files):
             # Prefer the client-supplied relative path (used for folder
@@ -394,8 +446,20 @@ def build_router(
                 results.append({"name": rel_path, "ok": False, "error": "invalid path"})
                 continue
 
+            # upload_file.size isn't always available depending on how
+            # the client sent the request — fall back to 0 (unknown)
+            # rather than assuming, since guessing wrong would show a
+            # misleading percentage/ETA on the Transfers page.
+            declared_size = getattr(upload_file, "size", None) or 0
+            transfer_id = transfer_registry.start_transfer(
+                "upload", os.path.basename(rel_path), declared_size, client_address
+            )
             try:
-                actual_path, bytes_written = await save_upload(upload_file, destination)
+                actual_path, bytes_written = await save_upload(
+                    upload_file,
+                    destination,
+                    on_progress=lambda n, tid=transfer_id: transfer_registry.update_progress(tid, n),
+                )
                 results.append(
                     {"name": os.path.basename(actual_path), "ok": True, "bytes": bytes_written}
                 )
@@ -403,6 +467,8 @@ def build_router(
                 # disk full, permission denied, path too long, etc. — report
                 # per-file rather than failing the whole batch
                 results.append({"name": rel_path, "ok": False, "error": str(exc)})
+            finally:
+                transfer_registry.finish_transfer(transfer_id)
 
         failed = [r for r in results if not r["ok"]]
         return {
@@ -444,6 +510,7 @@ def build_router(
 
     @router.post("/api/upload/start")
     def start_resumable_upload(
+        request: Request,
         item: str = Form(...),
         path: str = Form(default=""),
         filename: str = Form(...),
@@ -462,6 +529,16 @@ def build_router(
 
         session = resumable_manager.start_session(
             item, target_dir, relative_path or filename, total_size
+        )
+        # Reuses the resumable session's own id as the transfer_id, so
+        # cancelling this transfer (from the Transfers page) and
+        # cancelling the resumable session (the existing DELETE
+        # endpoint below) stay correlated rather than needing two
+        # separate ids tracked in two places.
+        client_address = request.client.host if request.client else ""
+        transfer_registry.start_transfer(
+            "upload", os.path.basename(relative_path or filename), total_size,
+            client_address, transfer_id=session.id,
         )
         return {"upload_id": session.id, "bytes_received": 0, "total_size": total_size}
 
@@ -495,6 +572,7 @@ def build_router(
             # the client should re-check /status and retry appropriately,
             # not treat this as a fatal error.
             raise HTTPException(status_code=409, detail=str(exc))
+        transfer_registry.update_progress(upload_id, session.bytes_received)
         return {"bytes_received": session.bytes_received}
 
     @router.post("/api/upload/finalize/{upload_id}")
@@ -505,11 +583,33 @@ def build_router(
             raise HTTPException(status_code=404, detail="Unknown or expired upload session")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+        transfer_registry.finish_transfer(upload_id)
         return {"ok": True, "name": os.path.basename(final_path)}
 
     @router.delete("/api/upload/{upload_id}")
     def cancel_resumable_upload(upload_id: str) -> dict:
         resumable_manager.cancel(upload_id)
+        transfer_registry.finish_transfer(upload_id)
+        return {"ok": True}
+
+    # -- transfers -----------------------------------------------------------
+    @router.get("/api/transfers/active")
+    def get_active_transfers() -> dict:
+        return {"transfers": transfer_registry.get_active()}
+
+    @router.post("/api/transfers/{transfer_id}/cancel")
+    def cancel_transfer(transfer_id: str) -> dict:
+        ok = transfer_registry.cancel_transfer(transfer_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Unknown or already-finished transfer")
+        # Best-effort: if this happens to also be a resumable upload
+        # session, cancel that too, so the client's next chunk attempt
+        # is rejected rather than the upload silently continuing after
+        # being "cancelled" only in the registry's bookkeeping.
+        try:
+            resumable_manager.cancel(transfer_id)
+        except Exception:
+            pass
         return {"ok": True}
 
     # -- private messages -----------------------------------------------------------

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from app.network.ip import find_available_port, get_lan_ip
 from app.server.auth import AccessControl
 from app.server.messages import MessageStore
+from app.server.transfers import TransferRegistry
 from app.server.routes import build_router
 from app.state import ShareManager
 from app.transfer.resumable import ResumableUploadManager
@@ -51,6 +52,7 @@ class ServerHandle:
         self.port: int | None = None
         self.message_store: MessageStore | None = None
         self.resumable_manager: ResumableUploadManager | None = None
+        self.transfer_registry: TransferRegistry | None = None
 
     @property
     def is_running(self) -> bool:
@@ -75,10 +77,14 @@ class ServerHandle:
         self.port = find_available_port(self.preferred_port)
         self.message_store = MessageStore()
         self.resumable_manager = ResumableUploadManager()
+        self.transfer_registry = TransferRegistry()
 
         app = FastAPI(title="LocalShare")
         app.include_router(
-            build_router(self.share_manager, self.message_store, self.resumable_manager, self.access_control)
+            build_router(
+                self.share_manager, self.message_store, self.resumable_manager,
+                self.access_control, self.transfer_registry,
+            )
         )
 
         # Lazy import (see auth_middleware.py) — keeps that module
@@ -132,3 +138,4 @@ class ServerHandle:
         self.port = None
         self.message_store = None
         self.resumable_manager = None
+        self.transfer_registry = None

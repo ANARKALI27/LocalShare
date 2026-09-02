@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -267,6 +268,11 @@ class MainWindow(QMainWindow):
         self._nearby_devices_timer.setInterval(3000)
         self._nearby_devices_timer.timeout.connect(self._refresh_nearby_devices)
         self._nearby_devices_timer.start()
+
+        self._transfers_timer = QTimer(self)
+        self._transfers_timer.setInterval(1000)  # more frequent than Nearby Devices — progress should feel live
+        self._transfers_timer.timeout.connect(self._refresh_transfers)
+        self._transfers_timer.start()
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
@@ -763,9 +769,7 @@ class MainWindow(QMainWindow):
         # Transfers needs the server to report progress back to this
         # GUI, neither of which exists yet) — added now so the full
         # navigation skeleton is complete and testable --
-        self.app_pages.addWidget(self._build_stub_page(
-            "Transfers", "Live transfer progress with pause/cancel is coming in a future update."
-        ))
+        self.app_pages.addWidget(self._build_transfers_page())
         self.app_pages.addWidget(self._build_stub_page(
             "Received", "A dedicated view of received files is coming in a future update."
         ))
@@ -800,6 +804,141 @@ class MainWindow(QMainWindow):
         layout.addWidget(heading)
         layout.addWidget(desc)
         return page
+
+    def _build_transfers_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        heading = QLabel("Transfers")
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        note = QLabel("Files currently uploading or downloading through this share, live.")
+        note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(note)
+
+        transfers_scroll = QScrollArea()
+        transfers_scroll.setWidgetResizable(True)
+        transfers_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        transfers_content = QWidget()
+        transfers_scroll.setWidget(transfers_content)
+        self.transfers_list_layout = QVBoxLayout(transfers_content)
+        self.transfers_list_layout.setSpacing(8)
+        self.transfers_list_layout.addStretch()
+        layout.addWidget(transfers_scroll, stretch=1)
+
+        self.transfers_empty_label = QLabel("No active transfers right now.")
+        self.transfers_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transfers_empty_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        layout.addWidget(self.transfers_empty_label)
+
+        # transfer_id -> (row_widget, progress_bar, info_label) — reused
+        # across refreshes and updated in place, rather than destroying
+        # and recreating every row on every poll, which would make
+        # progress bars visibly flicker/reset several times a second.
+        self._transfer_rows: dict[str, tuple[QWidget, QProgressBar, QLabel]] = {}
+
+        return page
+
+    def _build_transfer_row(self, transfer: dict) -> tuple[QWidget, QProgressBar, QLabel]:
+        row = QFrame()
+        row.setObjectName("TransferRow")
+        row_layout = QVBoxLayout(row)
+        row_layout.setContentsMargins(12, 8, 12, 8)
+        row_layout.setSpacing(4)
+
+        top_row = QHBoxLayout()
+        arrow = "⬆️" if transfer["direction"] == "upload" else "⬇️"
+        name_label = QLabel(f"{arrow} {transfer['filename']}")
+        name_label.setStyleSheet("font-weight: 600;")
+        top_row.addWidget(name_label)
+        top_row.addStretch()
+        cancel_btn = QPushButton("✕")
+        cancel_btn.setFixedSize(24, 24)
+        cancel_btn.setToolTip("Cancel this transfer")
+        cancel_btn.clicked.connect(lambda: self._cancel_transfer(transfer["transfer_id"]))
+        top_row.addWidget(cancel_btn)
+        row_layout.addLayout(top_row)
+
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 100)
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(6)
+        row_layout.addWidget(progress_bar)
+
+        info_label = QLabel()
+        info_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        row_layout.addWidget(info_label)
+
+        self.transfers_list_layout.insertWidget(self.transfers_list_layout.count() - 1, row)
+        return row, progress_bar, info_label
+
+    def _format_bytes(self, num_bytes: float) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if num_bytes < 1024:
+                return f"{num_bytes:.0f} {unit}" if unit == "B" else f"{num_bytes:.1f} {unit}"
+            num_bytes /= 1024
+        return f"{num_bytes:.1f} TB"
+
+    def _update_transfer_row(self, progress_bar: QProgressBar, info_label: QLabel, transfer: dict) -> None:
+        total = transfer["total_bytes"]
+        done = transfer["bytes_transferred"]
+        if total > 0:
+            pct = min(100, int(done / total * 100))
+            progress_bar.setRange(0, 100)
+            progress_bar.setValue(pct)
+            size_text = f"{self._format_bytes(done)} / {self._format_bytes(total)} ({pct}%)"
+        else:
+            # Total size unknown (can happen for regular, non-resumable
+            # uploads depending on how the browser sent the request) —
+            # show an indeterminate/busy bar rather than a misleading 0%.
+            progress_bar.setRange(0, 0)
+            size_text = self._format_bytes(done)
+
+        speed = transfer["speed_bytes_per_sec"]
+        speed_text = f" — {self._format_bytes(speed)}/s" if speed > 0 else ""
+        eta = transfer["eta_seconds"]
+        eta_text = f" — {int(eta)}s left" if eta is not None else ""
+        status = " (cancelling…)" if transfer["cancelled"] else ""
+        info_label.setText(f"{size_text}{speed_text}{eta_text}{status}")
+
+    def _refresh_transfers(self) -> None:
+        if not hasattr(self, "transfers_list_layout"):
+            return
+        registry = self.server_handle.transfer_registry if self.server_handle.is_running else None
+        active = registry.get_active() if registry is not None else []
+        active_ids = {t["transfer_id"] for t in active}
+
+        # remove rows for transfers that are no longer active (finished/gone)
+        for transfer_id in list(self._transfer_rows.keys()):
+            if transfer_id not in active_ids:
+                row_widget, _bar, _label = self._transfer_rows.pop(transfer_id)
+                row_widget.setParent(None)
+                row_widget.deleteLater()
+
+        # add/update rows for currently-active transfers
+        for transfer in active:
+            transfer_id = transfer["transfer_id"]
+            if transfer_id not in self._transfer_rows:
+                self._transfer_rows[transfer_id] = self._build_transfer_row(transfer)
+            _row, progress_bar, info_label = self._transfer_rows[transfer_id]
+            self._update_transfer_row(progress_bar, info_label, transfer)
+
+        self.transfers_empty_label.setVisible(len(active) == 0)
+
+    def _cancel_transfer(self, transfer_id: str) -> None:
+        if self.server_handle.is_running and self.server_handle.transfer_registry is not None:
+            self.server_handle.transfer_registry.cancel_transfer(transfer_id)
+        # Also cancels the underlying resumable session directly (not
+        # just the registry bookkeeping) — harmless no-op if this
+        # transfer_id doesn't correspond to a resumable upload.
+        if self.server_handle.is_running and self.server_handle.resumable_manager is not None:
+            try:
+                self.server_handle.resumable_manager.cancel(transfer_id)
+            except Exception:
+                pass
 
     def _build_nearby_devices_page(self) -> QWidget:
         page = QWidget()

@@ -50,7 +50,9 @@ def resolve_upload_path(shared_root: str, relative_path: str) -> str:
     return safe_join(shared_root, *clean_segments)
 
 
-async def save_upload(upload_file: UploadFile, destination: str) -> tuple[str, int]:
+async def save_upload(
+    upload_file: UploadFile, destination: str, on_progress=None
+) -> tuple[str, int]:
     """
     Stream an incoming UploadFile to disk in chunks. Returns
     (actual_destination_path, bytes_written) — the actual path may
@@ -59,6 +61,11 @@ async def save_upload(upload_file: UploadFile, destination: str) -> tuple[str, i
     back to the saved file (e.g. building a download link) MUST use the
     returned path, not the one they passed in. Creates parent
     directories as needed (for folder uploads that include nested paths).
+
+    on_progress, if given, is called with the cumulative bytes written
+    so far after each chunk — optional, for callers that want to report
+    live progress (e.g. into the Transfers page) without this function
+    needing to know anything about how that's tracked.
     """
     os.makedirs(os.path.dirname(destination), exist_ok=True)
 
@@ -78,5 +85,7 @@ async def save_upload(upload_file: UploadFile, destination: str) -> tuple[str, i
             # other uploads' chunks) while this one file is being saved.
             await loop.run_in_executor(None, out.write, chunk)
             total += len(chunk)
+            if on_progress is not None:
+                on_progress(total)
 
     return destination, total
