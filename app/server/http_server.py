@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from app.network.ip import find_available_port, get_lan_ip
 from app.server.auth import AccessControl
 from app.server.messages import MessageStore
+from app.server.received_log import ReceivedLog
 from app.server.transfers import TransferRegistry
 from app.server.routes import build_router
 from app.state import ShareManager
@@ -52,7 +53,15 @@ class ServerHandle:
         self.port: int | None = None
         self.message_store: MessageStore | None = None
         self.resumable_manager: ResumableUploadManager | None = None
-        self.transfer_registry: TransferRegistry | None = None
+        # Created once here, NOT in start()/cleared in stop() like
+        # message_store/resumable_manager above — those are legitimately
+        # scoped to a single serving session (old messages/in-progress
+        # upload sessions genuinely shouldn't survive a restart), but
+        # Transfers History and Received are meant to be looked back on,
+        # so they need to survive across multiple Stop/Start Sharing
+        # cycles within the same app run, the same way access_control does.
+        self.transfer_registry = TransferRegistry()
+        self.received_log = ReceivedLog()
 
     @property
     def is_running(self) -> bool:
@@ -77,13 +86,15 @@ class ServerHandle:
         self.port = find_available_port(self.preferred_port)
         self.message_store = MessageStore()
         self.resumable_manager = ResumableUploadManager()
-        self.transfer_registry = TransferRegistry()
+        # transfer_registry and received_log are intentionally NOT
+        # recreated here — see the comment in __init__ for why they
+        # need to persist across Stop/Start Sharing cycles.
 
         app = FastAPI(title="LocalShare")
         app.include_router(
             build_router(
                 self.share_manager, self.message_store, self.resumable_manager,
-                self.access_control, self.transfer_registry,
+                self.access_control, self.transfer_registry, self.received_log,
             )
         )
 
@@ -138,4 +149,5 @@ class ServerHandle:
         self.port = None
         self.message_store = None
         self.resumable_manager = None
-        self.transfer_registry = None
+        # transfer_registry and received_log deliberately left alone —
+        # see __init__.

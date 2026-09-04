@@ -12,11 +12,14 @@ import threading
 import time
 import uuid
 
+MAX_HISTORY = 200  # capped so this can't grow forever across a long-running session
+
 
 class TransferRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._transfers: dict[str, dict] = {}
+        self._history: list[dict] = []
 
     def start_transfer(
         self,
@@ -66,9 +69,31 @@ class TransferRegistry:
     def finish_transfer(self, transfer_id: str) -> None:
         with self._lock:
             t = self._transfers.get(transfer_id)
-            if t is not None:
-                t["finished"] = True
-                t["speed_bytes_per_sec"] = 0.0
+            if t is None or t["finished"]:
+                return  # already finished — guards against double-recording history below
+            t["finished"] = True
+            t["finished_at"] = time.time()
+            t["speed_bytes_per_sec"] = 0.0
+            self._history.insert(0, {
+                "transfer_id": transfer_id,
+                "direction": t["direction"],
+                "filename": t["filename"],
+                "total_bytes": t["total_bytes"],
+                "bytes_transferred": t["bytes_transferred"],
+                "client_address": t["client_address"],
+                "started_at": t["started_at"],
+                "finished_at": t["finished_at"],
+                "cancelled": t["cancelled"],
+            })
+            if len(self._history) > MAX_HISTORY:
+                self._history = self._history[:MAX_HISTORY]
+
+    def get_history(self) -> list[dict]:
+        """Most-recent-first list of completed transfers (both
+        successful and cancelled) — for the History page. A defensive
+        copy, same reasoning as active_devices() in discovery.py."""
+        with self._lock:
+            return list(self._history)
 
     def cancel_transfer(self, transfer_id: str) -> bool:
         """Marks a transfer as cancelled. Returns False if no such

@@ -12,6 +12,7 @@ import os
 import platform
 import socket
 import tempfile
+import time
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QSettings, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPixmap
@@ -770,17 +771,13 @@ class MainWindow(QMainWindow):
         # GUI, neither of which exists yet) — added now so the full
         # navigation skeleton is complete and testable --
         self.app_pages.addWidget(self._build_transfers_page())
-        self.app_pages.addWidget(self._build_stub_page(
-            "Received", "A dedicated view of received files is coming in a future update."
-        ))
+        self.app_pages.addWidget(self._build_received_page())
         self.app_pages.addWidget(self._build_nearby_devices_page())
         # "Settings" (index 4) opens the existing popup dialog rather
         # than embedding inline — a placeholder page still needs to
         # exist at this stack index so it lines up with app_nav's rows
         self.app_pages.addWidget(self._build_stub_page("Settings", "Opening Settings…"))
-        self.app_pages.addWidget(self._build_stub_page(
-            "History", "A transfer history log is coming in a future update."
-        ))
+        self.app_pages.addWidget(self._build_history_page())
 
         self.app_nav.currentRowChanged.connect(self._on_app_nav_changed)
         self.app_nav.setCurrentRow(0)
@@ -990,11 +987,98 @@ class MainWindow(QMainWindow):
         if address:
             QDesktopServices.openUrl(QUrl(f"http://{address}"))
 
+    def _build_received_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        heading = QLabel("Received")
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        note = QLabel("Files uploaded to your shares by others, most recent first.")
+        note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(note)
+
+        self.received_list = QListWidget()
+        layout.addWidget(self.received_list, stretch=1)
+
+        self.received_empty_label = QLabel("Nothing's been uploaded to your shares yet.")
+        self.received_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.received_empty_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        layout.addWidget(self.received_empty_label)
+        return page
+
+    def _refresh_received(self) -> None:
+        if not hasattr(self, "received_list"):
+            return
+        entries = (
+            self.server_handle.received_log.all_entries()
+            if self.server_handle.received_log is not None else []
+        )
+        self.received_list.clear()
+        for entry in entries:
+            when = time.strftime("%b %d, %H:%M", time.localtime(entry["received_at"]))
+            size_text = self._format_bytes(entry["size"])
+            item = QListWidgetItem(
+                f"📄  {entry['filename']}  —  {size_text}  —  from {entry['source_address']}  —  {when}"
+            )
+            item.setToolTip(entry["path"])
+            self.received_list.addItem(item)
+        self.received_empty_label.setVisible(len(entries) == 0)
+        self.received_list.setVisible(len(entries) > 0)
+
+    def _build_history_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        heading = QLabel("History")
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        note = QLabel("Completed uploads and downloads from this session, most recent first.")
+        note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(note)
+
+        self.history_list = QListWidget()
+        layout.addWidget(self.history_list, stretch=1)
+
+        self.history_empty_label = QLabel("No completed transfers yet.")
+        self.history_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.history_empty_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 13px;")
+        layout.addWidget(self.history_empty_label)
+        return page
+
+    def _refresh_history(self) -> None:
+        if not hasattr(self, "history_list"):
+            return
+        entries = (
+            self.server_handle.transfer_registry.get_history()
+            if self.server_handle.transfer_registry is not None else []
+        )
+        self.history_list.clear()
+        for entry in entries:
+            arrow = "⬆️" if entry["direction"] == "upload" else "⬇️"
+            when = time.strftime("%b %d, %H:%M", time.localtime(entry["finished_at"]))
+            size_text = self._format_bytes(entry["bytes_transferred"])
+            status = " (cancelled)" if entry["cancelled"] else ""
+            item = QListWidgetItem(f"{arrow}  {entry['filename']}  —  {size_text}  —  {when}{status}")
+            self.history_list.addItem(item)
+        self.history_empty_label.setVisible(len(entries) == 0)
+        self.history_list.setVisible(len(entries) > 0)
+
     def _on_app_nav_changed(self, row: int) -> None:
         self.app_pages.setCurrentIndex(row)
-        if row == 4:  # "Settings" — open the existing popup dialog, then snap back
+        if row == 2:  # "Received"
+            self._refresh_received()
+        elif row == 4:  # "Settings" — open the existing popup dialog, then snap back
             self._open_settings_dialog()
             self.app_nav.setCurrentRow(0)
+        elif row == 5:  # "History"
+            self._refresh_history()
 
     def _toggle_ui_layout_mode(self) -> None:
         new_mode = "Landscape" if self._ui_layout_mode == "Vertical" else "Vertical"

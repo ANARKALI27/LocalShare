@@ -26,6 +26,7 @@ from app.paths import WEB_DIR
 from app.server.auth import AccessControl
 from app.server.auth_middleware import COOKIE_NAME
 from app.server.messages import MessageStore, Attachment
+from app.server.received_log import ReceivedLog
 from app.server.transfers import TransferRegistry
 from app.version import APP_VERSION
 from app.server.security import PathSecurityError, safe_join
@@ -189,6 +190,7 @@ def build_router(
     resumable_manager: ResumableUploadManager,
     access_control: AccessControl,
     transfer_registry: TransferRegistry,
+    received_log: ReceivedLog,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -463,6 +465,9 @@ def build_router(
                 results.append(
                     {"name": os.path.basename(actual_path), "ok": True, "bytes": bytes_written}
                 )
+                received_log.record(
+                    os.path.basename(actual_path), bytes_written, client_address, actual_path
+                )
             except OSError as exc:
                 # disk full, permission denied, path too long, etc. — report
                 # per-file rather than failing the whole batch
@@ -576,7 +581,8 @@ def build_router(
         return {"bytes_received": session.bytes_received}
 
     @router.post("/api/upload/finalize/{upload_id}")
-    def finalize_resumable_upload(upload_id: str) -> dict:
+    def finalize_resumable_upload(upload_id: str, request: Request) -> dict:
+        session = resumable_manager.get(upload_id)
         try:
             final_path = resumable_manager.finalize(upload_id)
         except KeyError:
@@ -584,6 +590,13 @@ def build_router(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         transfer_registry.finish_transfer(upload_id)
+        client_address = request.client.host if request.client else ""
+        received_log.record(
+            os.path.basename(final_path),
+            session.total_size if session is not None else 0,
+            client_address,
+            final_path,
+        )
         return {"ok": True, "name": os.path.basename(final_path)}
 
     @router.delete("/api/upload/{upload_id}")
@@ -596,6 +609,14 @@ def build_router(
     @router.get("/api/transfers/active")
     def get_active_transfers() -> dict:
         return {"transfers": transfer_registry.get_active()}
+
+    @router.get("/api/transfers/history")
+    def get_transfer_history() -> dict:
+        return {"history": transfer_registry.get_history()}
+
+    @router.get("/api/received")
+    def get_received_files() -> dict:
+        return {"received": received_log.all_entries()}
 
     @router.post("/api/transfers/{transfer_id}/cancel")
     def cancel_transfer(transfer_id: str) -> dict:
