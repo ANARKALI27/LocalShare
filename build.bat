@@ -11,7 +11,11 @@ pip install pyinstaller
 
 echo.
 echo Building LocalShare.exe (this can take a few minutes)...
-python -m PyInstaller --noconfirm localshare.spec
+REM --clean forces PyInstaller to wipe its own intermediate build
+REM cache first. Without it, changes to resource files like the app
+REM icon have been observed to not always refresh in a rebuild — the
+REM icon embedding step can reuse cached data from a previous run.
+python -m PyInstaller --noconfirm --clean localshare.spec
 
 echo.
 if exist "dist\LocalShare.exe" (
