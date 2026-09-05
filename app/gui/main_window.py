@@ -1835,6 +1835,17 @@ class MainWindow(QMainWindow):
         ngrok_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         layout.addWidget(ngrok_note)
 
+        ngrok_defender_note = QLabel(
+            "Windows may flag ngrok as a risk the first time it runs — this is a known, "
+            "widely-reported false positive that happens to ngrok users generally, not "
+            "specific to LocalShare. It gets flagged because tunneling local traffic to the "
+            "internet is exactly the kind of behavior malware also exhibits. If you trust "
+            "ngrok (downloaded directly from ngrok's own servers), you can allow it."
+        )
+        ngrok_defender_note.setWordWrap(True)
+        ngrok_defender_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(ngrok_defender_note)
+
         ngrok_signup_row = QHBoxLayout()
         ngrok_signup_btn = HoverGlowButton("Get authtoken (opens browser)", glow_color=self.theme_colors["accent"])
         ngrok_signup_btn.clicked.connect(
@@ -2219,6 +2230,15 @@ class MainWindow(QMainWindow):
                 open_btn.clicked.connect(lambda checked=False, u=url: QDesktopServices.openUrl(QUrl(u)))
                 step_row.addWidget(open_btn)
             layout.addLayout(step_row)
+
+        defender_note = QLabel(
+            "Note: Windows may flag ngrok as a risk the first time it runs — a known false "
+            "positive that happens to ngrok users generally (tunneling local traffic to the "
+            "internet looks similar to what malware does). If you trust ngrok, you can allow it."
+        )
+        defender_note.setWordWrap(True)
+        defender_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(defender_note)
 
         skip_note = QLabel("You can skip this entirely if you only need Local Network sharing.")
         skip_note.setWordWrap(True)

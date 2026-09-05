@@ -25,6 +25,45 @@ error handling is built around.
 """
 from __future__ import annotations
 
+import contextlib
+import platform
+import subprocess
+
+
+@contextlib.contextmanager
+def _suppress_windows_console_windows():
+    """
+    pyngrok launches the actual ngrok binary via its own internal
+    subprocess.Popen call, with no option exposed to control Windows
+    console-window creation — the exact same issue previously hit and
+    fixed for cloudflared, just now one layer deeper, inside a library
+    this app doesn't control the internals of. Without this, launching
+    ngrok.exe (a console program) from this windowed GUI app causes
+    Windows to auto-allocate a visible console window for it.
+
+    Patches subprocess.Popen's __init__ on the class itself (not
+    reassigning the module-level name), so it works regardless of
+    whether pyngrok did `import subprocess` or `from subprocess import
+    Popen` — both end up using the same Popen class object. Scoped to
+    only the duration of the actual ngrok launch, then restored,
+    rather than patching it for the app's entire lifetime.
+    """
+    if platform.system() != "Windows":
+        yield
+        return
+
+    original_init = subprocess.Popen.__init__
+
+    def patched_init(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        original_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = patched_init
+    try:
+        yield
+    finally:
+        subprocess.Popen.__init__ = original_init
+
 
 class TunnelHandle:
     def __init__(self) -> None:
@@ -63,8 +102,9 @@ class TunnelHandle:
         from pyngrok.exception import PyngrokError
 
         try:
-            ngrok.set_auth_token(auth_token)
-            tunnel = ngrok.connect(local_port, "http")
+            with _suppress_windows_console_windows():
+                ngrok.set_auth_token(auth_token)
+                tunnel = ngrok.connect(local_port, "http")
         except PyngrokError as exc:
             raise RuntimeError(
                 f"Couldn't start the ngrok tunnel: {exc}\n\n"
