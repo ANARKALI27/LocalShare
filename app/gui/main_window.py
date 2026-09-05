@@ -904,6 +904,14 @@ class MainWindow(QMainWindow):
     def _refresh_transfers(self) -> None:
         if not hasattr(self, "transfers_list_layout"):
             return
+        # Only do this work while the Transfers page is actually the one
+        # being shown — in Vertical mode app_pages is permanently forced
+        # to Dashboard (index 0), and even in Landscape mode the user
+        # might be looking at a different page entirely. Polling and
+        # rebuilding progress-bar rows for a page nobody can see is
+        # pure wasted work, running every single second regardless.
+        if self.app_pages.currentIndex() != 1:
+            return
         registry = self.server_handle.transfer_registry if self.server_handle.is_running else None
         active = registry.get_active() if registry is not None else []
         active_ids = {t["transfer_id"] for t in active}
@@ -969,6 +977,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_nearby_devices(self) -> None:
         if not hasattr(self, "nearby_devices_list") or self.discovery_service is None:
+            return
+        if self.app_pages.currentIndex() != 3:  # only while this page is actually visible — same reasoning as Transfers above
             return
         devices = self.discovery_service.registry.active_devices()
 
@@ -1072,8 +1082,12 @@ class MainWindow(QMainWindow):
 
     def _on_app_nav_changed(self, row: int) -> None:
         self.app_pages.setCurrentIndex(row)
-        if row == 2:  # "Received"
+        if row == 1:  # "Transfers" — refresh immediately rather than waiting for the next 1s tick
+            self._refresh_transfers()
+        elif row == 2:  # "Received"
             self._refresh_received()
+        elif row == 3:  # "Nearby Devices" — refresh immediately rather than waiting for the next 3s tick
+            self._refresh_nearby_devices()
         elif row == 4:  # "Settings" — open the existing popup dialog, then snap back
             self._open_settings_dialog()
             self.app_nav.setCurrentRow(0)
