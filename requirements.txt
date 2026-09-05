@@ -15,11 +15,9 @@ cheroot>=10.0
 # Phase 8: QR code for phone access
 qrcode[pil]>=7.4
 
-# v2: internet sharing via Cloudflare Quick Tunnel (optional — see README)
-# No Python package needed — requires the "cloudflared" program
-# installed separately and on PATH (not pip-installable; see
-# app/server/tunnel.py for install instructions per OS).
-# wsgidav>=4.3          # Phase 6: WebDAV / Explorer integration
-# qrcode[pil]>=7.4       # Phase 8: QR code
-# zeroconf>=0.132        # Phase 8: LAN discovery
-# pyinstaller>=6.6        # Phase 10: packaging
+# v2: internet sharing via ngrok (optional — see README). Unlike the
+# Cloudflare Quick Tunnel this replaced, pyngrok manages the actual
+# ngrok binary itself automatically (downloads it on first use), so
+# no separate install step is needed the way cloudflared required —
+# just a free ngrok account and authtoken, configured in Settings.
+pyngrok>=7.0

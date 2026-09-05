@@ -98,17 +98,22 @@ class ResumableUploadManager:
                 f"for a {session.total_size}-byte file"
             )
 
-        # The disk write itself happens without holding the lock — it's
-        # a plain seek+write to this chunk's own byte range via a fresh
-        # file handle, and concurrent chunks target different, non-
-        # overlapping regions of the same file, which is safe to do in
-        # parallel on both POSIX and Windows without extra locking.
-        # Only the shared bookkeeping (the ranges list) needs the lock.
-        with open(session.temp_path, "r+b") as f:
-            f.seek(offset)
-            f.write(data)
-
+        # The actual disk write is serialized behind the lock —
+        # deliberately, unlike an earlier version of this method that
+        # opened the same file concurrently from multiple threads
+        # assuming that was safe cross-platform. It's genuinely fine on
+        # POSIX, but Windows file-handle sharing is stricter by
+        # default and this was never actually tested there, only
+        # inferred — exactly the kind of assumption not worth carrying
+        # into something as core as "can this app upload a file at
+        # all." The concurrency benefit of uploading several chunks at
+        # once mostly comes from overlapping NETWORK transfer time
+        # across chunks anyway; serializing the brief disk write itself
+        # costs very little of that.
         with self._lock:
+            with open(session.temp_path, "r+b") as f:
+                f.seek(offset)
+                f.write(data)
             session.covered_ranges = merge_range(session.covered_ranges, (offset, offset + len(data)))
             session.bytes_received = total_covered(session.covered_ranges)
         return session

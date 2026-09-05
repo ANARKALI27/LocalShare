@@ -11,6 +11,38 @@ git checkout v3.0.0   # current
 
 ---
 
+## Unreleased
+
+**Internet sharing switched back from Cloudflare Quick Tunnel to
+ngrok** (via `pyngrok`) — reversing the v3.0.0 change below. Reasons:
+Cloudflare Quick Tunnel's `cloudflared` binary needed a separate,
+error-prone installer step (a PowerShell download script fighting
+Windows PowerShell 5.1's default TLS negotiation, among other things)
+that proved unreliable in practice; `pyngrok` manages its own binary
+download automatically at runtime instead, with no separate installer
+step needed. Trade-off: ngrok now requires a free account and
+authtoken again (configured in Settings → Sharing), since ngrok no
+longer offers Cloudflare's old no-signup option. Added a "❓ Setup
+Guide" welcome dialog (shown once automatically, reachable anytime
+after) walking through the authtoken setup with direct links.
+
+Also fixed in the same pass:
+- **Uploads could fail outright on Windows.** The concurrent-chunk
+  upload system opened the same file from multiple threads
+  simultaneously, verified safe on Linux but never actually tested on
+  Windows, where file-handle sharing is stricter by default. Disk
+  writes are now serialized behind a lock while still allowing
+  network transfer to overlap across chunks.
+- **Dragging a file onto the browser page did the browser's own
+  default thing** (attempting to open/save it locally) instead of
+  uploading it — there was no drag-and-drop handling on the web page
+  at all, only on the desktop app's own drop zone. This also
+  incidentally bypassed PIN protection, since the drop never reached
+  the server. Added real drag-and-drop upload support to the browser
+  page, including for PIN-protected shares.
+
+---
+
 ## v3.0.0
 
 **Internet sharing switched from ngrok to Cloudflare Quick Tunnel** —

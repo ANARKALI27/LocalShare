@@ -51,7 +51,6 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "dist\LocalShare.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "packaging\windows\download_cloudflared.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -59,16 +58,7 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Fetches cloudflared automatically so Internet/Global sharing works
-; immediately without the user needing to separately install it via
-; winget or find it themselves — previously the installer did nothing
-; about this at all, and Global mode would just fail with a "not
-; found" error until the user manually tracked it down. Genuinely
-; non-fatal by design (see the script itself): a failed download here
-; (no internet at install time, corporate firewall, GitHub
-; unreachable, etc.) does NOT fail or block the LocalShare install —
-; Local sharing works completely fine either way, and the app's
-; existing not-found handling covers Global mode gracefully if this
-; didn't get a chance to run successfully.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\download_cloudflared.ps1"" -DestDir ""{app}"""; StatusMsg: "Setting up Internet Sharing component (optional)..."; Flags: runhidden waituntilterminated
+; ngrok (used for Internet/Global sharing) is managed automatically by
+; pyngrok at runtime — it downloads its own binary on first use, no
+; separate installer step needed the way cloudflared required.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

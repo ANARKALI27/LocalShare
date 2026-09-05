@@ -159,23 +159,24 @@ class _UpdateDownloadWorker(QThread):
 
 class _TunnelStartWorker(QThread):
     """
-    Starts the cloudflared tunnel off the GUI thread — launching the
-    subprocess and waiting for it to report its public URL takes a
-    few seconds, which would freeze the window if run directly on the
-    main thread.
+    Starts the ngrok tunnel off the GUI thread — connecting and
+    waiting for it to report its public URL takes a few seconds
+    (longer on first use, when pyngrok downloads the ngrok binary),
+    which would freeze the window if run directly on the main thread.
     """
 
     finished_ok = Signal(str)  # public_url
     finished_error = Signal(str)  # error message
 
-    def __init__(self, tunnel_handle: TunnelHandle, local_port: int) -> None:
+    def __init__(self, tunnel_handle: TunnelHandle, local_port: int, auth_token: str) -> None:
         super().__init__()
         self._handle = tunnel_handle
         self._local_port = local_port
+        self._auth_token = auth_token
 
     def run(self) -> None:
         try:
-            public_url = self._handle.start(self._local_port)
+            public_url = self._handle.start(self._local_port, self._auth_token)
             self.finished_ok.emit(public_url)
         except RuntimeError as exc:
             self.finished_error.emit(str(exc))
@@ -264,6 +265,9 @@ class MainWindow(QMainWindow):
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
 
+        if not QSettings("LocalShare", "LocalShare").value("has_shown_welcome_guide", False, type=bool):
+            QTimer.singleShot(600, self._show_welcome_guide)
+
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
         # Wrapped in a scroll area so the window stays genuinely
@@ -297,6 +301,11 @@ class MainWindow(QMainWindow):
         title_row.addWidget(version_label)
 
         title_row.addStretch()
+
+        self.setup_guide_btn = HoverGlowButton("❓ Setup Guide", glow_color=self.theme_colors["accent"])
+        self.setup_guide_btn.setToolTip("Getting-started steps, including setting up Internet Sharing")
+        self.setup_guide_btn.clicked.connect(self._show_welcome_guide)
+        title_row.addWidget(self.setup_guide_btn)
 
         self.settings_btn = HoverGlowButton("⚙️ Settings", glow_color=self.theme_colors["accent"])
         self.settings_btn.setToolTip("Theme, accent color, and background options")
@@ -567,10 +576,9 @@ class MainWindow(QMainWindow):
         )
         root.addWidget(self.mode_indicator_label)
 
-        # No token/signup field here — Cloudflare Quick Tunnel (unlike
-        # the ngrok version this replaced) needs no account, just the
-        # "cloudflared" program installed and on PATH. start() in
-        # tunnel.py gives clear install instructions if it's missing.
+        # The ngrok authtoken field lives in Settings → Sharing, not
+        # here — this row is about mode selection, that's about
+        # configuring what Global mode needs to actually work.
 
         self.tunnel_status_label = QLabel("")
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
@@ -855,10 +863,11 @@ class MainWindow(QMainWindow):
             # "QThread: Destroyed while thread is still running" crash.
             return
 
-        # No token/signup validation needed for Global mode anymore —
-        # Cloudflare Quick Tunnel just needs "cloudflared" installed,
-        # which tunnel.py checks for when the tunnel actually starts
-        # and reports clearly if it's missing.
+        # No authtoken validation needed here specifically — tunnel.py's
+        # start() checks for one when the tunnel actually connects and
+        # raises a clear, actionable error if it's missing, rather than
+        # duplicating that check at every call site that might trigger
+        # Global mode.
 
         # Configure PIN protection BEFORE the server starts, so the
         # very first request it ever serves is already covered — not
@@ -947,11 +956,12 @@ class MainWindow(QMainWindow):
 
     def _start_tunnel(self) -> None:
         port = self.server_handle.port
+        auth_token = QSettings("LocalShare", "LocalShare").value("ngrok_auth_token", "")
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        self.tunnel_status_label.setText("Starting internet tunnel (cloudflared)…")
+        self.tunnel_status_label.setText("Starting internet tunnel (ngrok)…")
         self.tunnel_status_label.show()
 
-        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port)
+        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port, auth_token)
         self._tunnel_worker.finished_ok.connect(self._on_tunnel_started)
         self._tunnel_worker.finished_error.connect(self._on_tunnel_failed)
         self._tunnel_worker.start()
@@ -1812,6 +1822,40 @@ class MainWindow(QMainWindow):
             )
         )
         layout.addWidget(self.auto_resume_shares_checkbox)
+
+        internet_label = QLabel("INTERNET SHARING")
+        internet_label.setObjectName("SectionLabel")
+        layout.addWidget(internet_label)
+
+        ngrok_note = QLabel(
+            "Internet Sharing (the \"Global\" option) uses ngrok, which requires a free "
+            "account. Get your authtoken from the ngrok dashboard and paste it below."
+        )
+        ngrok_note.setWordWrap(True)
+        ngrok_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(ngrok_note)
+
+        ngrok_signup_row = QHBoxLayout()
+        ngrok_signup_btn = HoverGlowButton("Get authtoken (opens browser)", glow_color=self.theme_colors["accent"])
+        ngrok_signup_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://dashboard.ngrok.com/get-started/your-authtoken"))
+        )
+        ngrok_signup_row.addWidget(ngrok_signup_btn)
+        ngrok_signup_row.addStretch()
+        layout.addLayout(ngrok_signup_row)
+
+        self.ngrok_token_input = QLineEdit()
+        self.ngrok_token_input.setPlaceholderText("Paste your ngrok authtoken here")
+        self.ngrok_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        _saved_token = settings.value("ngrok_auth_token", "")
+        if _saved_token:
+            self.ngrok_token_input.setText(_saved_token)
+        self.ngrok_token_input.editingFinished.connect(
+            lambda: QSettings("LocalShare", "LocalShare").setValue(
+                "ngrok_auth_token", self.ngrok_token_input.text().strip()
+            )
+        )
+        layout.addWidget(self.ngrok_token_input)
         layout.addStretch()
 
         # -- Appearance page --------------------------------------------------------------
@@ -2116,6 +2160,82 @@ class MainWindow(QMainWindow):
         # applied at the QApplication level (see __init__/_apply_theme),
         # which Qt reliably cascades to every window including this one.
         self.settings_dialog.exec()
+
+    def _show_welcome_guide(self) -> None:
+        """
+        Shown once, automatically, the first time LocalShare runs —
+        also reachable anytime afterward via the '?' button next to
+        Settings, since a one-time-only dialog is easy to accidentally
+        dismiss before actually reading it.
+        """
+        QSettings("LocalShare", "LocalShare").setValue("has_shown_welcome_guide", True)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Welcome to LocalShare")
+        dialog.setMinimumWidth(440)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+
+        heading = QLabel("Welcome to LocalShare 👋")
+        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Sharing on your local network (same Wi-Fi) works immediately — drag files in, "
+            "hit Start Sharing, and you're done. No account, no setup."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 13px;")
+        layout.addWidget(intro)
+
+        internet_label = QLabel("Want to share over the Internet too?")
+        internet_label.setStyleSheet(f"font-weight: 600; color: {self.theme_colors['text']}; font-size: 13px;")
+        layout.addWidget(internet_label)
+
+        steps_note = QLabel(
+            "\"Global\" sharing uses ngrok, which needs a free account — this is a one-time setup:"
+        )
+        steps_note.setWordWrap(True)
+        steps_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(steps_note)
+
+        steps = [
+            ("1", "Create a free ngrok account", "https://dashboard.ngrok.com/signup"),
+            ("2", "Copy your authtoken", "https://dashboard.ngrok.com/get-started/your-authtoken"),
+            ("3", "Paste it into Settings → Sharing → ngrok Authtoken", None),
+        ]
+        for number, text, url in steps:
+            step_row = QHBoxLayout()
+            number_label = QLabel(number)
+            number_label.setFixedWidth(20)
+            number_label.setStyleSheet(f"color: {self.theme_colors['accent']}; font-weight: 600;")
+            step_row.addWidget(number_label)
+            text_label = QLabel(text)
+            text_label.setWordWrap(True)
+            text_label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 12px;")
+            step_row.addWidget(text_label, stretch=1)
+            if url:
+                open_btn = HoverGlowButton("Open", glow_color=self.theme_colors["accent"])
+                open_btn.clicked.connect(lambda checked=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+                step_row.addWidget(open_btn)
+            layout.addLayout(step_row)
+
+        skip_note = QLabel("You can skip this entirely if you only need Local Network sharing.")
+        skip_note.setWordWrap(True)
+        skip_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(skip_note)
+
+        button_row = QHBoxLayout()
+        maybe_later_btn = HoverGlowButton("Maybe Later", glow_color=self.theme_colors["accent"])
+        maybe_later_btn.clicked.connect(dialog.accept)
+        button_row.addWidget(maybe_later_btn)
+        button_row.addStretch()
+        open_settings_btn = HoverGlowButton("Open Settings Now", glow_color=self.theme_colors["accent"])
+        open_settings_btn.clicked.connect(lambda: (dialog.accept(), self._open_settings_dialog()))
+        button_row.addWidget(open_settings_btn)
+        layout.addLayout(button_row)
+
+        dialog.exec()
 
     def _check_for_updates(self) -> None:
         address = self.update_source_input.text().strip()

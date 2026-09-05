@@ -381,6 +381,49 @@ async function uploadFiles(fileList) {
 uploadFilesInput.addEventListener("change", (e) => uploadFiles(e.target.files));
 uploadFolderInput.addEventListener("change", (e) => uploadFiles(e.target.files));
 
+// -- drag-and-drop upload directly onto the page -----------------------------------------------------------
+//
+// Without this, dropping a file onto the page does whatever the
+// browser's own default drag-drop behavior is (typically trying to
+// navigate to/open the dropped file as a local file, which often
+// surfaces as an unexpected "save file" prompt) — the drop never
+// reaches this app at all, which also means it silently skips
+// whatever PIN protection is configured, since no request was ever
+// made to the server in the first place. preventDefault() on both
+// dragover and drop is required to suppress that and handle the files
+// ourselves instead.
+const mainContentEl = document.getElementById("main-content");
+
+mainContentEl.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (currentBrowseItem) {
+    mainContentEl.classList.add("drag-over");
+  }
+});
+
+mainContentEl.addEventListener("dragleave", (e) => {
+  // Only clear the highlight when actually leaving main-content, not
+  // when passing over a child element within it (dragleave fires for
+  // both, since child elements bubble their own dragleave up too).
+  if (!mainContentEl.contains(e.relatedTarget)) {
+    mainContentEl.classList.remove("drag-over");
+  }
+});
+
+mainContentEl.addEventListener("drop", (e) => {
+  e.preventDefault();
+  mainContentEl.classList.remove("drag-over");
+  if (!currentBrowseItem) {
+    // Same rule as the button-based upload bar: uploading only makes
+    // sense inside an actual shared folder, not at the Home root.
+    return;
+  }
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    uploadFiles(e.dataTransfer.files);
+  }
+});
+
+
 // -- folder upload, including genuinely empty subfolders -----------------------------------------------------------
 //
 // The plain <input webkitdirectory> approach above has a hard browser

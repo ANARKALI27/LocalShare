@@ -112,6 +112,14 @@ main {
   max-width: 900px;
   margin: 0 auto;
   padding: 16px 24px 40px;
+  border: 2px dashed transparent;
+  border-radius: 12px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+main.drag-over {
+  border-color: var(--accent);
+  background-color: rgba(76, 141, 255, 0.08);
 }
 
 .listing {
