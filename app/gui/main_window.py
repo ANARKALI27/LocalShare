@@ -293,7 +293,6 @@ class MainWindow(QMainWindow):
 
         app_nav = QListWidget()
         app_nav.setObjectName("AppNav")
-        app_nav.setFixedWidth(180)
         app_nav.setFrameShape(QFrame.Shape.NoFrame)
         outer_layout.addWidget(app_nav)
 
@@ -302,8 +301,27 @@ class MainWindow(QMainWindow):
         self.app_nav = app_nav
         self.app_pages = app_pages
 
-        for page_name in ("Dashboard", "Transfers", "Received", "Nearby Devices", "Settings", "History"):
-            app_nav.addItem(page_name)
+        self._app_nav_items = [
+            ("🏠", "Dashboard"), ("🔄", "Transfers"), ("📥", "Received"),
+            ("📡", "Nearby Devices"), ("⚙️", "Settings"), ("🕐", "History"),
+        ]
+        for icon, page_name in self._app_nav_items:
+            app_nav.addItem(icon)  # text set properly by _apply_sidebar_style() below, once settings are loaded
+
+        _sidebar_settings = QSettings("LocalShare", "LocalShare")
+        self._sidebar_width_mode = _sidebar_settings.value("sidebar_width", "Normal")
+        if self._sidebar_width_mode not in ("Compact", "Normal", "Wide"):
+            self._sidebar_width_mode = "Normal"
+        self._sidebar_show_labels = _sidebar_settings.value("sidebar_show_labels", True, type=bool)
+
+        self.sidebar_width_combo = QComboBox()
+        self.sidebar_width_combo.addItems(["Compact", "Normal", "Wide"])
+        self.sidebar_width_combo.setCurrentText(self._sidebar_width_mode)
+        self.sidebar_width_combo.currentTextChanged.connect(self._set_sidebar_width)
+
+        self.sidebar_show_labels_checkbox = QCheckBox("Show labels")
+        self.sidebar_show_labels_checkbox.setChecked(self._sidebar_show_labels)
+        self.sidebar_show_labels_checkbox.toggled.connect(self._set_sidebar_show_labels)
 
         # -- Dashboard page: wraps the existing scroll_area/central/root
         # content, completely unchanged from here down --
@@ -782,6 +800,7 @@ class MainWindow(QMainWindow):
         self.app_nav.currentRowChanged.connect(self._on_app_nav_changed)
         self.app_nav.setCurrentRow(0)
         self._apply_ui_layout_mode(self._ui_layout_mode)
+        self._apply_sidebar_style()
 
     def _build_stub_page(self, title: str, description: str) -> QWidget:
         """A placeholder page for features not built yet — keeps the
@@ -1108,6 +1127,33 @@ class MainWindow(QMainWindow):
         else:
             self.app_nav.show()
             self.layout_toggle_btn.setText("📱 Vertical")
+
+    def _set_sidebar_width(self, mode: str) -> None:
+        self._sidebar_width_mode = mode
+        QSettings("LocalShare", "LocalShare").setValue("sidebar_width", mode)
+        self._apply_sidebar_style()
+
+    def _set_sidebar_show_labels(self, show: bool) -> None:
+        self._sidebar_show_labels = show
+        QSettings("LocalShare", "LocalShare").setValue("sidebar_show_labels", show)
+        self._apply_sidebar_style()
+
+    def _apply_sidebar_style(self) -> None:
+        widths = {"Compact": 64, "Normal": 180, "Wide": 240}
+        # Labels never fit in Compact width regardless of the separate
+        # toggle — there just isn't room to show text alongside the
+        # icon at that width, so Compact always forces icon-only.
+        show_labels = self._sidebar_show_labels and self._sidebar_width_mode != "Compact"
+        self.app_nav.setFixedWidth(widths.get(self._sidebar_width_mode, 180))
+        for row, (icon, page_name) in enumerate(self._app_nav_items):
+            item = self.app_nav.item(row)
+            if item is not None:
+                item.setText(f"{icon}   {page_name}" if show_labels else icon)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    if show_labels else Qt.AlignmentFlag.AlignCenter
+                )
+                item.setToolTip(page_name if not show_labels else "")
 
     # -- drop / browse handlers -----------------------------------------------------------
     def _on_paths_dropped(self, paths: list[str]) -> None:
@@ -2371,6 +2417,26 @@ class MainWindow(QMainWindow):
 
         # -- Effects page (Cards, Transparency, Glass, Motion, Performance) --------------------------------------------------------------
         layout = add_page("Effects")
+
+        sidebar_label = QLabel("SIDEBAR")
+        sidebar_label.setObjectName("SectionLabel")
+        layout.addWidget(sidebar_label)
+
+        sidebar_width_row = QHBoxLayout()
+        sidebar_width_row.addWidget(QLabel("Width"))
+        sidebar_width_row.addStretch()
+        sidebar_width_row.addWidget(self.sidebar_width_combo)
+        layout.addLayout(sidebar_width_row)
+
+        layout.addWidget(self.sidebar_show_labels_checkbox)
+        sidebar_note = QLabel(
+            "Applies to the app-wide sidebar (Dashboard/Transfers/etc.) in Landscape layout. "
+            "Labels are always hidden at Compact width regardless of this setting — there just "
+            "isn't room for them."
+        )
+        sidebar_note.setWordWrap(True)
+        sidebar_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(sidebar_note)
 
         cards_label = QLabel("CARDS")
         cards_label.setObjectName("SectionLabel")

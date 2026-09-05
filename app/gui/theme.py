@@ -268,7 +268,17 @@ def theme_from_json(json_text: str) -> tuple[str, dict]:
 
 
 CARD_RADIUS = {"Sharp": 0, "Small": 4, "Medium": 8, "Large": 14, "Extra Large": 20}
-CARD_BORDER = {"None": (0, "transparent"), "Subtle": (1, "border"), "Visible": (2, "border")}
+CARD_BORDER = {
+    "None": (0, "transparent"),
+    "Subtle": (1, "border"),
+    "Visible": (2, "border"),
+    # Accent-colored rather than the neutral border color, and a touch
+    # thicker — QSS has no box-shadow/glow property to genuinely bloom
+    # light outward from the edge, so this is the honest, achievable
+    # version: a distinctly colored, more prominent border standing in
+    # for "glow" rather than a literal soft-light effect.
+    "Glow": (3, "accent"),
+}
 CARD_SHADOW_BLUR = {"None": 0, "Subtle": 10, "Medium": 20, "Strong": 34}
 
 
