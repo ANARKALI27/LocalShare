@@ -78,7 +78,16 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX compression of the bundled Python DLL is a well-documented,
+    # somewhat unpredictable cause of "Failed to import encodings
+    # module" and similar interpreter-startup failures on Windows —
+    # it works fine most of the time, then fails on certain Windows
+    # versions/AV combinations in ways that are hard to reproduce or
+    # diagnose after the fact. The app already bundles a full Python
+    # runtime plus PySide6/FastAPI/uvicorn, so it's not a small
+    # executable regardless — not worth trading genuine startup
+    # reliability for UPX's marginal size savings on top of that.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,  # windowed app — no console window behind the GUI
