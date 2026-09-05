@@ -50,7 +50,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-Source: "dist\LocalShare.exe"; DestDir: "{app}"; Flags: ignoreversion
+; recursesubdirs + createallsubdirs: onedir mode produces a whole
+; folder (LocalShare.exe plus its supporting DLLs/_internal folder),
+; not a single file — see localshare.spec for why this changed from
+; onefile. Source ends in \* to copy the CONTENTS of dist\LocalShare\
+; into {app}, not a nested LocalShare\ subfolder inside {app}.
+Source: "dist\LocalShare\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

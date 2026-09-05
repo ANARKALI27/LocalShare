@@ -9,9 +9,9 @@ set -e
 echo "Step 1: Building LocalShare..."
 bash build_linux.sh
 
-if [ ! -f "dist/LocalShare" ]; then
+if [ ! -f "dist/LocalShare/LocalShare" ]; then
     echo
-    echo "dist/LocalShare was not found -- the build must succeed before creating a .deb."
+    echo "dist/LocalShare/LocalShare was not found -- the build must succeed before creating a .deb."
     exit 1
 fi
 
@@ -36,7 +36,12 @@ APP_VERSION=$(python3 -c "from app.version import APP_VERSION; print(APP_VERSION
 sed -i "s/^Version:.*/Version: ${APP_VERSION}/" packaging/debian/DEBIAN/control
 
 mkdir -p packaging/debian/usr/lib/localshare
-cp dist/LocalShare packaging/debian/usr/lib/localshare/LocalShare
+# onedir mode (see localshare.spec) produces a whole folder — LocalShare
+# plus its supporting files alongside it — not a single file, so this
+# copies the CONTENTS of dist/LocalShare/ into place (the trailing /.
+# on the source means "contents of," not "the folder itself nested
+# inside the destination").
+cp -r dist/LocalShare/. packaging/debian/usr/lib/localshare/
 chmod 755 packaging/debian/usr/lib/localshare/LocalShare
 
 mkdir -p packaging/debian/usr/bin

@@ -51,11 +51,16 @@ install_with_pip pyinstaller
 
 echo
 echo "Building LocalShare (this can take a few minutes)..."
-"$PY" -m PyInstaller --noconfirm localshare.spec
+# --clean forces PyInstaller to wipe its own intermediate build cache
+# first — without it, changes to resource files have been observed to
+# not always refresh in a rebuild.
+"$PY" -m PyInstaller --noconfirm --clean localshare.spec
 
 echo
-if [ -f "dist/LocalShare" ]; then
-    echo "Build succeeded: dist/LocalShare"
+if [ -f "dist/LocalShare/LocalShare" ]; then
+    echo "Build succeeded: dist/LocalShare/LocalShare"
+    echo "(This is a folder, not a single file — see localshare.spec for why."
+    echo " Copy/share the WHOLE dist/LocalShare folder, not just the binary on its own.)"
 else
-    echo "Build finished but dist/LocalShare was not found -- check the output above for errors."
+    echo "Build finished but dist/LocalShare/LocalShare was not found -- check the output above for errors."
 fi

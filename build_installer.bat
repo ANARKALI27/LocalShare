@@ -8,12 +8,12 @@ REM During Inno Setup's own installer, it doesn't matter whether you
 REM add it to PATH — this script checks both the typical install
 REM locations and PATH automatically.
 
-echo Step 1: Building LocalShare.exe...
+echo Step 1: Building LocalShare...
 call build.bat nopause
 
-if not exist "dist\LocalShare.exe" (
+if not exist "dist\LocalShare\LocalShare.exe" (
     echo.
-    echo LocalShare.exe was not found in dist\ -- the build must succeed before creating an installer.
+    echo LocalShare.exe was not found in dist\LocalShare\ -- the build must succeed before creating an installer.
     pause
     exit /b 1
 )

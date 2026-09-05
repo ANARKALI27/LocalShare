@@ -71,9 +71,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="LocalShare",
     debug=False,
     bootloader_ignore_signals=False,
@@ -89,7 +88,6 @@ exe = EXE(
     # reliability for UPX's marginal size savings on top of that.
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,  # windowed app — no console window behind the GUI
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -102,4 +100,28 @@ exe = EXE(
     # rather than relying on PyInstaller to silently no-op it on Linux,
     # since that behavior isn't something to bet an already-working
     # Linux build on without being able to verify it directly.
+)
+
+# COLLECT (onedir mode: a folder containing LocalShare.exe plus its
+# dependencies alongside it) rather than a single self-extracting
+# onefile executable. This is a deliberate reliability trade-off, not
+# a default: onefile self-extracts its entire bundle to a fresh temp
+# directory on every single launch, which is a well-documented source
+# of exactly the "Failed to start embedded python interpreter" class
+# of error — antivirus interference with the extraction, permissions
+# issues on the temp directory, disk space, or a launch racing an
+# antivirus scan of the just-extracted files. A plain folder sidesteps
+# all of that: the files are just... there, unpacked once at install
+# time, nothing to extract on every run. The trade-off is a slightly
+# less tidy install (a folder instead of one file) and a very slightly
+# slower first paint (loading DLLs individually vs. from one archive),
+# both minor compared to "the app sometimes refuses to start at all."
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="LocalShare",
 )
