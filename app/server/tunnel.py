@@ -36,6 +36,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import threading
 
 _TRYCLOUDFLARE_URL_PATTERN = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
@@ -79,6 +80,17 @@ def _find_cloudflared() -> str | None:
 
     candidates: list[str] = []
     if platform.system() == "Windows":
+        # The Windows installer downloads cloudflared.exe directly
+        # alongside LocalShare.exe itself during setup (see
+        # localshare_setup.iss + download_cloudflared.ps1) — check
+        # there first. Deliberately os.path.dirname(sys.executable),
+        # NOT app_root(): for a PyInstaller onefile build, app_root()
+        # resolves to sys._MEIPASS, a TEMPORARY per-run extraction
+        # folder, not the real install directory the installer wrote
+        # into. sys.executable is the actual running .exe's own path,
+        # which is what "{app}" meant during installation.
+        if getattr(sys, "frozen", False):
+            candidates.append(os.path.join(os.path.dirname(sys.executable), "cloudflared.exe"))
         # winget's "Links" folder is a stable, version-independent
         # location it maintains specifically so other tools can find
         # what it installs without needing PATH to be refreshed.
