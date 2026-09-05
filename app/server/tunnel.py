@@ -130,12 +130,25 @@ class TunnelHandle:
 
         cloudflared_path = _find_cloudflared()
         if not cloudflared_path:
+            message = _INSTALL_INSTRUCTIONS.get(
+                platform.system(),
+                "cloudflared isn't installed. Get it (free, no account needed) from:\n"
+                "https://github.com/cloudflare/cloudflared/releases/latest",
+            )
+            if platform.system() == "Windows" and getattr(sys, "frozen", False):
+                # The installer tries to fetch this automatically — if
+                # that failed for some reason (no internet at install
+                # time, corporate firewall, etc.), its own log next to
+                # the app records exactly why, rather than leaving this
+                # as a total mystery.
+                log_path = os.path.join(os.path.dirname(sys.executable), "cloudflared_install_log.txt")
+                if os.path.isfile(log_path):
+                    message += (
+                        f"\n\nLocalShare's installer tried to set this up automatically and didn't "
+                        f"succeed — see {log_path} for why."
+                    )
             raise RuntimeError(
-                _INSTALL_INSTRUCTIONS.get(
-                    platform.system(),
-                    "cloudflared isn't installed. Get it (free, no account needed) from:\n"
-                    "https://github.com/cloudflare/cloudflared/releases/latest",
-                )
+                message
                 + "\n\nAlready installed it? Fully close and reopen LocalShare — a "
                 "just-installed program sometimes isn't visible to an app that was "
                 "already running before the install finished."

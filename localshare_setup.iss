@@ -70,5 +70,5 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; Local sharing works completely fine either way, and the app's
 ; existing not-found handling covers Global mode gracefully if this
 ; didn't get a chance to run successfully.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\download_cloudflared.ps1"" -DestDir ""{app}"""; StatusMsg: "Setting up Internet Sharing component (optional)..."; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\download_cloudflared.ps1"" -DestDir ""{app}"""; StatusMsg: "Setting up Internet Sharing component (optional)..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
