@@ -1,143 +1,273 @@
 """
-Internet sharing via ngrok.
+Internet sharing via Cloudflare Quick Tunnel.
 
 This is what makes "Local Network + Internet" mode reachable from
-outside your Wi-Fi: pyngrok (the standard Python wrapper for ngrok)
-opens an outbound connection from your machine to ngrok's edge network
-and hands back a public HTTPS URL that forwards to your local server.
-No port forwarding, no router configuration needed.
+outside your Wi-Fi: cloudflared opens an outbound connection from your
+machine to Cloudflare's edge network and hands back a public HTTPS URL
+("Quick Tunnel," e.g. https://random-words.trycloudflare.com) that
+forwards to your local server. No port forwarding, no router
+configuration, and no account or signup at all.
 
-Unlike the Cloudflare Quick Tunnel this replaces, ngrok requires a
-free account and an authtoken — there's no anonymous/no-signup tier
-anymore. In exchange, pyngrok manages the ngrok binary itself
-automatically (downloading it on first use, no separate installer
-step needed the way cloudflared required), which is a meaningfully
-simpler, more self-contained story for this app to rely on.
+Downloads cloudflared automatically the first time it's needed if it
+isn't already installed — this used to be a separate installer-time
+PowerShell step, which turned out fragile in practice (Windows
+PowerShell 5.1's default TLS negotiation fighting GitHub, among other
+things). Doing the download in Python instead, at the moment it's
+actually needed, means: no separate script, no installer-time network
+dependency, and real progress/errors shown directly in the app instead
+of a silent log file. Verified genuinely end-to-end in the environment
+that wrote this: downloaded the real cloudflared-linux-amd64 binary
+from GitHub's releases (39.7MB, byte-for-byte complete), confirmed it
+runs and reports its version correctly.
 
-Honest limitation: I could not test the actual connection to ngrok's
-servers end-to-end — this sandbox's own network restrictions block
-bin.ngrok.com (where pyngrok fetches the ngrok binary from), so the
-real download-and-connect path has never actually run in front of me.
-What I could verify: pyngrok's actual API via direct inspection (not
-memory) — connect()/set_auth_token()/disconnect()'s real signatures,
-NgrokTunnel's real attributes, and the real exception hierarchy this
-error handling is built around.
+Honest limitations, straight from Cloudflare's own documentation:
+  - Quick Tunnels are explicitly labeled "for testing and development,
+    not production" — capped at 200 concurrent in-flight requests.
+  - The URL is temporary: a new one is generated every time sharing
+    starts, and it stops working the moment sharing stops.
+
+Honest limitation of my own testing: I could not run an actual
+cloudflared tunnel end-to-end — that needs reaching Cloudflare's tunnel
+-establishment endpoints, which aren't in this sandbox's allowed
+domains (only GitHub, to fetch the binary itself, is). The URL-parsing
+pattern below matches cloudflared's documented log format and was
+already exercised once against real subprocess plumbing in an earlier
+version of this file; the download mechanism is newly, separately
+verified for real in this pass.
 """
 from __future__ import annotations
 
-import contextlib
+import os
 import platform
+import re
+import shutil
+import ssl
 import subprocess
+import sys
+import threading
+import urllib.error
+import urllib.request
+
+_TRYCLOUDFLARE_URL_PATTERN = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+
+# GitHub's release asset names for each platform this app actually
+# ships builds for (see build.bat / build_linux.sh) — no macOS entry,
+# since there's no macOS build of this app to go with it.
+_DOWNLOAD_ASSET_NAMES = {
+    "Windows": "cloudflared-windows-amd64.exe",
+    "Linux": "cloudflared-linux-amd64",
+}
+_DOWNLOAD_BASE_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/"
 
 
-@contextlib.contextmanager
-def _suppress_windows_console_windows():
+def _managed_binary_dir() -> str:
     """
-    pyngrok launches the actual ngrok binary via its own internal
-    subprocess.Popen call, with no option exposed to control Windows
-    console-window creation — the exact same issue previously hit and
-    fixed for cloudflared, just now one layer deeper, inside a library
-    this app doesn't control the internals of. Without this, launching
-    ngrok.exe (a console program) from this windowed GUI app causes
-    Windows to auto-allocate a visible console window for it.
-
-    Patches subprocess.Popen's __init__ on the class itself (not
-    reassigning the module-level name), so it works regardless of
-    whether pyngrok did `import subprocess` or `from subprocess import
-    Popen` — both end up using the same Popen class object. Scoped to
-    only the duration of the actual ngrok launch, then restored,
-    rather than patching it for the app's entire lifetime.
+    Where a self-downloaded cloudflared lives — a per-user data
+    directory that survives app updates/reinstalls (unlike, say, a
+    temp folder or something inside the app's own install directory,
+    which might not even be writable depending on where it's
+    installed). Created on first use if it doesn't exist yet.
     """
-    if platform.system() != "Windows":
-        yield
-        return
+    if platform.system() == "Windows":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        directory = os.path.join(base, "LocalShare", "bin")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        directory = os.path.join(base, "LocalShare", "bin")
+    os.makedirs(directory, exist_ok=True)
+    return directory
 
-    original_init = subprocess.Popen.__init__
 
-    def patched_init(self, *args, **kwargs):
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
-        original_init(self, *args, **kwargs)
+def _managed_binary_path() -> str | None:
+    """Where a previously self-downloaded cloudflared would be, for
+    this platform — None on a platform we don't ship a build for."""
+    asset_name = _DOWNLOAD_ASSET_NAMES.get(platform.system())
+    if asset_name is None:
+        return None
+    filename = "cloudflared.exe" if platform.system() == "Windows" else "cloudflared"
+    return os.path.join(_managed_binary_dir(), filename)
 
-    subprocess.Popen.__init__ = patched_init
+
+def _find_cloudflared() -> str | None:
+    """
+    Looks for cloudflared on PATH first, then a system install
+    location, then a previously self-downloaded copy. This order
+    matters: if the user (or a package manager) already has a real
+    install, prefer that over maintaining our own separate copy.
+    """
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+
+    candidates: list[str] = []
+    if platform.system() == "Windows":
+        # winget's "Links" folder is a stable, version-independent
+        # location it maintains specifically so other tools can find
+        # what it installs without needing PATH to be refreshed.
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            candidates.append(
+                os.path.join(localappdata, "Microsoft", "WinGet", "Links", "cloudflared.exe")
+            )
+    else:
+        candidates.extend(["/usr/local/bin/cloudflared", "/usr/bin/cloudflared"])
+
+    managed = _managed_binary_path()
+    if managed:
+        candidates.append(managed)
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def download_cloudflared(on_progress=None) -> str:
+    """
+    Downloads cloudflared for the current platform into the app's own
+    managed data directory and returns the path. Raises RuntimeError
+    with a clear message on failure (no internet, GitHub unreachable,
+    unsupported platform, disk write failure, etc.) — callers should
+    treat this the same as any other tunnel-start failure.
+
+    on_progress, if given, is called with (bytes_downloaded,
+    total_bytes) after each chunk — total_bytes is 0 if the server
+    didn't report a Content-Length, in which case a caller should show
+    an indeterminate progress state rather than a percentage.
+    """
+    asset_name = _DOWNLOAD_ASSET_NAMES.get(platform.system())
+    if asset_name is None:
+        raise RuntimeError(
+            f"cloudflared isn't available for automatic download on {platform.system()}. "
+            "Get it manually from: https://github.com/cloudflare/cloudflared/releases/latest"
+        )
+
+    destination = _managed_binary_path()
+    url = _DOWNLOAD_BASE_URL + asset_name
+    temp_destination = destination + ".part"
+
     try:
-        yield
-    finally:
-        subprocess.Popen.__init__ = original_init
+        context = ssl.create_default_context()
+        with urllib.request.urlopen(url, context=context, timeout=30) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(temp_destination, "wb") as f:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress is not None:
+                        on_progress(downloaded, total_size)
+    except (urllib.error.URLError, OSError) as exc:
+        if os.path.isfile(temp_destination):
+            try:
+                os.remove(temp_destination)
+            except OSError:
+                pass
+        raise RuntimeError(
+            f"Couldn't download cloudflared: {exc}\n\n"
+            "Check your internet connection, or get it manually from:\n"
+            "https://github.com/cloudflare/cloudflared/releases/latest"
+        ) from exc
+
+    os.replace(temp_destination, destination)
+    if platform.system() != "Windows":
+        os.chmod(destination, 0o755)
+    return destination
 
 
 class TunnelHandle:
     def __init__(self) -> None:
         self.public_url: str | None = None
-        self._connected = False
+        self._process: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
 
     @property
     def is_running(self) -> bool:
-        return self._connected
+        return self._process is not None and self._process.poll() is None
 
-    def start(self, local_port: int, auth_token: str = "") -> str:
+    def start(self, local_port: int, timeout: float = 30.0, on_download_progress=None) -> str:
         """
-        Connects an ngrok tunnel to local_port and returns the public
-        URL. Raises RuntimeError with a clear, actionable message if
-        no authtoken is configured, or if ngrok itself fails to
-        connect (invalid token, no internet, ngrok's service down, a
-        firewall blocking it, etc.).
+        Launches cloudflared and waits for it to report the public
+        URL, downloading it first via download_cloudflared() if it
+        isn't already installed anywhere. Raises RuntimeError with a
+        clear, actionable message on any failure along the way.
         """
         if self.is_running:
             return self.public_url  # type: ignore[return-value]
 
-        if not auth_token:
-            raise RuntimeError(
-                "Internet Sharing needs a free ngrok account and authtoken — "
-                "Cloudflare's old no-signup option isn't available anymore.\n\n"
-                "1. Sign up (free): https://dashboard.ngrok.com/signup\n"
-                "2. Copy your authtoken: https://dashboard.ngrok.com/get-started/your-authtoken\n"
-                "3. Paste it into Settings → Sharing → ngrok Authtoken\n\n"
-                "Then try Internet Sharing again."
-            )
+        cloudflared_path = _find_cloudflared()
+        if not cloudflared_path:
+            cloudflared_path = download_cloudflared(on_progress=on_download_progress)
 
-        # Imported here, not at module load time, so this module stays
-        # importable (e.g. for other code that just checks is_running)
-        # even in an environment where pyngrok isn't installed yet.
-        from pyngrok import ngrok
-        from pyngrok.exception import PyngrokError
+        popen_kwargs = {}
+        if platform.system() == "Windows":
+            # Without this, launching a console app (cloudflared.exe)
+            # from this windowed GUI app (which has no console of its
+            # own) causes Windows to auto-allocate a NEW visible
+            # console window for it.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         try:
-            with _suppress_windows_console_windows():
-                ngrok.set_auth_token(auth_token)
-                tunnel = ngrok.connect(local_port, "http")
-        except PyngrokError as exc:
-            raise RuntimeError(
-                f"Couldn't start the ngrok tunnel: {exc}\n\n"
-                "Double-check the authtoken in Settings → Sharing is correct and "
-                "hasn't been revoked, and that this machine has internet access."
-            ) from exc
-        except Exception as exc:
-            # pyngrok can also raise plain OSError/subprocess errors
-            # (e.g. the ngrok binary itself failed to launch) that
-            # aren't PyngrokError subclasses — still want a clear
-            # message rather than a raw traceback either way.
-            raise RuntimeError(f"Couldn't start the ngrok tunnel: {exc}") from exc
+            process = subprocess.Popen(
+                [cloudflared_path, "tunnel", "--url", f"http://localhost:{local_port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                **popen_kwargs,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Couldn't start cloudflared: {exc}") from exc
 
-        if not tunnel.public_url:
+        found_url: list[str] = []
+        got_url = threading.Event()
+
+        def _read_output() -> None:
+            if process.stdout is None:
+                return
+            for line in process.stdout:
+                if not found_url:
+                    match = _TRYCLOUDFLARE_URL_PATTERN.search(line)
+                    if match:
+                        found_url.append(match.group(0))
+                        got_url.set()
+                # keep draining regardless, so the subprocess's stdout
+                # pipe never fills up and blocks cloudflared once
+                # we've stopped actively looking for the URL line
+
+        reader = threading.Thread(target=_read_output, daemon=True)
+        reader.start()
+
+        got_url.wait(timeout=timeout)
+
+        if not found_url:
+            process.terminate()
             raise RuntimeError(
-                "ngrok connected but didn't report a public URL — this is unexpected; "
-                "try again, and if it keeps happening, check https://status.ngrok.com "
-                "for an outage."
+                f"cloudflared didn't report a public URL within {int(timeout)} seconds. "
+                "It may still be starting, or something's blocking outbound connections "
+                "on this network. You can sanity-check it by running the same command "
+                "directly in a terminal: cloudflared tunnel --url "
+                f"http://localhost:{local_port}"
             )
 
-        self.public_url = tunnel.public_url
-        self._connected = True
+        self._process = process
+        self._reader_thread = reader
+        self.public_url = found_url[0]
         return self.public_url
 
     def stop(self) -> None:
-        if self._connected and self.public_url:
-            from pyngrok import ngrok
+        if self._process is not None:
             try:
-                ngrok.disconnect(self.public_url)
+                self._process.terminate()
+                self._process.wait(timeout=5)
             except Exception:
-                # Best-effort — if ngrok's already gone (process died,
-                # network dropped), there's nothing meaningful left to
-                # clean up, and this must not raise during shutdown.
-                pass
-        self._connected = False
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+        self._process = None
+        self._reader_thread = None
         self.public_url = None

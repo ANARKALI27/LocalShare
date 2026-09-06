@@ -15,9 +15,8 @@ cheroot>=10.0
 # Phase 8: QR code for phone access
 qrcode[pil]>=7.4
 
-# v2: internet sharing via ngrok (optional — see README). Unlike the
-# Cloudflare Quick Tunnel this replaced, pyngrok manages the actual
-# ngrok binary itself automatically (downloads it on first use), so
-# no separate install step is needed the way cloudflared required —
-# just a free ngrok account and authtoken, configured in Settings.
-pyngrok>=7.0
+# v2/v3: internet sharing via Cloudflare Quick Tunnel (optional — see
+# README). No separate Python package needed — cloudflared (the actual
+# tunnel program) is downloaded automatically at runtime using only
+# the standard library (see app/server/tunnel.py's download_cloudflared),
+# the first time Global mode is used and it isn't already installed.

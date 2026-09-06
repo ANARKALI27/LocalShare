@@ -159,24 +159,28 @@ class _UpdateDownloadWorker(QThread):
 
 class _TunnelStartWorker(QThread):
     """
-    Starts the ngrok tunnel off the GUI thread — connecting and
+    Starts the cloudflared tunnel off the GUI thread — connecting and
     waiting for it to report its public URL takes a few seconds
-    (longer on first use, when pyngrok downloads the ngrok binary),
-    which would freeze the window if run directly on the main thread.
+    (longer on first use, when cloudflared itself needs to be
+    downloaded — see tunnel.py's download_cloudflared), which would
+    freeze the window if run directly on the main thread.
     """
 
     finished_ok = Signal(str)  # public_url
     finished_error = Signal(str)  # error message
+    download_progress = Signal(int, int)  # bytes_downloaded, total_bytes (0 if unknown)
 
-    def __init__(self, tunnel_handle: TunnelHandle, local_port: int, auth_token: str) -> None:
+    def __init__(self, tunnel_handle: TunnelHandle, local_port: int) -> None:
         super().__init__()
         self._handle = tunnel_handle
         self._local_port = local_port
-        self._auth_token = auth_token
 
     def run(self) -> None:
         try:
-            public_url = self._handle.start(self._local_port, self._auth_token)
+            public_url = self._handle.start(
+                self._local_port,
+                on_download_progress=lambda done, total: self.download_progress.emit(done, total),
+            )
             self.finished_ok.emit(public_url)
         except RuntimeError as exc:
             self.finished_error.emit(str(exc))
@@ -583,9 +587,10 @@ class MainWindow(QMainWindow):
         )
         root.addWidget(self.mode_indicator_label)
 
-        # The ngrok authtoken field lives in Settings → Sharing, not
-        # here — this row is about mode selection, that's about
-        # configuring what Global mode needs to actually work.
+        # No token/signup field needed here — Cloudflare Quick Tunnel
+        # needs no account at all; cloudflared just downloads itself
+        # automatically (see tunnel.py) the first time Global mode is
+        # actually used.
 
         self.tunnel_status_label = QLabel("")
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
@@ -963,15 +968,23 @@ class MainWindow(QMainWindow):
 
     def _start_tunnel(self) -> None:
         port = self.server_handle.port
-        auth_token = QSettings("LocalShare", "LocalShare").value("ngrok_auth_token", "")
         self.tunnel_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        self.tunnel_status_label.setText("Starting internet tunnel (ngrok)…")
+        self.tunnel_status_label.setText("Starting internet tunnel (cloudflared)…")
         self.tunnel_status_label.show()
 
-        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port, auth_token)
+        self._tunnel_worker = _TunnelStartWorker(self.tunnel_handle, port)
         self._tunnel_worker.finished_ok.connect(self._on_tunnel_started)
         self._tunnel_worker.finished_error.connect(self._on_tunnel_failed)
+        self._tunnel_worker.download_progress.connect(self._on_tunnel_download_progress)
         self._tunnel_worker.start()
+
+    def _on_tunnel_download_progress(self, downloaded: int, total: int) -> None:
+        mb_done = downloaded / (1024 * 1024)
+        if total > 0:
+            pct = int(downloaded / total * 100)
+            self.tunnel_status_label.setText(f"Downloading cloudflared (one-time)… {mb_done:.1f} MB ({pct}%)")
+        else:
+            self.tunnel_status_label.setText(f"Downloading cloudflared (one-time)… {mb_done:.1f} MB")
 
     def _on_tunnel_started(self, public_url: str) -> None:
         share_url = self._build_share_url(public_url)
@@ -1853,46 +1866,14 @@ class MainWindow(QMainWindow):
         internet_label.setObjectName("SectionLabel")
         layout.addWidget(internet_label)
 
-        ngrok_note = QLabel(
-            "Internet Sharing (the \"Global\" option) uses ngrok, which requires a free "
-            "account. Get your authtoken from the ngrok dashboard and paste it below."
+        cloudflared_note = QLabel(
+            "Internet Sharing (the \"Global\" option) uses Cloudflare Quick Tunnel — no "
+            "account or signup needed. cloudflared (Cloudflare's tunnel program) downloads "
+            "automatically the first time you use Global mode, if it isn't already installed."
         )
-        ngrok_note.setWordWrap(True)
-        ngrok_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
-        layout.addWidget(ngrok_note)
-
-        ngrok_defender_note = QLabel(
-            "Windows may flag ngrok as a risk the first time it runs — this is a known, "
-            "widely-reported false positive that happens to ngrok users generally, not "
-            "specific to LocalShare. It gets flagged because tunneling local traffic to the "
-            "internet is exactly the kind of behavior malware also exhibits. If you trust "
-            "ngrok (downloaded directly from ngrok's own servers), you can allow it."
-        )
-        ngrok_defender_note.setWordWrap(True)
-        ngrok_defender_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
-        layout.addWidget(ngrok_defender_note)
-
-        ngrok_signup_row = QHBoxLayout()
-        ngrok_signup_btn = HoverGlowButton("Get authtoken (opens browser)", glow_color=self.theme_colors["accent"])
-        ngrok_signup_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl("https://dashboard.ngrok.com/get-started/your-authtoken"))
-        )
-        ngrok_signup_row.addWidget(ngrok_signup_btn)
-        ngrok_signup_row.addStretch()
-        layout.addLayout(ngrok_signup_row)
-
-        self.ngrok_token_input = QLineEdit()
-        self.ngrok_token_input.setPlaceholderText("Paste your ngrok authtoken here")
-        self.ngrok_token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        _saved_token = settings.value("ngrok_auth_token", "")
-        if _saved_token:
-            self.ngrok_token_input.setText(_saved_token)
-        self.ngrok_token_input.editingFinished.connect(
-            lambda: QSettings("LocalShare", "LocalShare").setValue(
-                "ngrok_auth_token", self.ngrok_token_input.text().strip()
-            )
-        )
-        layout.addWidget(self.ngrok_token_input)
+        cloudflared_note.setWordWrap(True)
+        cloudflared_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(cloudflared_note)
         layout.addStretch()
 
         # -- Appearance page --------------------------------------------------------------
@@ -2229,56 +2210,26 @@ class MainWindow(QMainWindow):
         internet_label.setStyleSheet(f"font-weight: 600; color: {self.theme_colors['text']}; font-size: 13px;")
         layout.addWidget(internet_label)
 
-        steps_note = QLabel(
-            "\"Global\" sharing uses ngrok, which needs a free account — this is a one-time setup:"
+        internet_note = QLabel(
+            "Just select \"Global\" instead of \"Local Network Only\" and hit Start Sharing — "
+            "no account or signup needed. The first time you use it, LocalShare downloads "
+            "cloudflared (Cloudflare's tunnel program, ~40MB) automatically, so that first "
+            "connection takes a little longer than usual — after that it's instant."
         )
-        steps_note.setWordWrap(True)
-        steps_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        layout.addWidget(steps_note)
+        internet_note.setWordWrap(True)
+        internet_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(internet_note)
 
-        steps = [
-            ("1", "Create a free ngrok account", "https://dashboard.ngrok.com/signup"),
-            ("2", "Copy your authtoken", "https://dashboard.ngrok.com/get-started/your-authtoken"),
-            ("3", "Paste it into Settings → Sharing → ngrok Authtoken", None),
-        ]
-        for number, text, url in steps:
-            step_row = QHBoxLayout()
-            number_label = QLabel(number)
-            number_label.setFixedWidth(20)
-            number_label.setStyleSheet(f"color: {self.theme_colors['accent']}; font-weight: 600;")
-            step_row.addWidget(number_label)
-            text_label = QLabel(text)
-            text_label.setWordWrap(True)
-            text_label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 12px;")
-            step_row.addWidget(text_label, stretch=1)
-            if url:
-                open_btn = HoverGlowButton("Open", glow_color=self.theme_colors["accent"])
-                open_btn.clicked.connect(lambda checked=False, u=url: QDesktopServices.openUrl(QUrl(u)))
-                step_row.addWidget(open_btn)
-            layout.addLayout(step_row)
-
-        defender_note = QLabel(
-            "Note: Windows may flag ngrok as a risk the first time it runs — a known false "
-            "positive that happens to ngrok users generally (tunneling local traffic to the "
-            "internet looks similar to what malware does). If you trust ngrok, you can allow it."
-        )
-        defender_note.setWordWrap(True)
-        defender_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
-        layout.addWidget(defender_note)
-
-        skip_note = QLabel("You can skip this entirely if you only need Local Network sharing.")
+        skip_note = QLabel("You can ignore all of this if you only need Local Network sharing.")
         skip_note.setWordWrap(True)
         skip_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
         layout.addWidget(skip_note)
 
         button_row = QHBoxLayout()
-        maybe_later_btn = HoverGlowButton("Maybe Later", glow_color=self.theme_colors["accent"])
-        maybe_later_btn.clicked.connect(dialog.accept)
-        button_row.addWidget(maybe_later_btn)
         button_row.addStretch()
-        open_settings_btn = HoverGlowButton("Open Settings Now", glow_color=self.theme_colors["accent"])
-        open_settings_btn.clicked.connect(lambda: (dialog.accept(), self._open_settings_dialog()))
-        button_row.addWidget(open_settings_btn)
+        got_it_btn = HoverGlowButton("Got it", glow_color=self.theme_colors["accent"])
+        got_it_btn.clicked.connect(dialog.accept)
+        button_row.addWidget(got_it_btn)
         layout.addLayout(button_row)
 
         dialog.exec()

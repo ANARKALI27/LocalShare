@@ -48,7 +48,7 @@ type `localshare` in a terminal.
 2. **Drag a file or folder into the window** (or click "Add Files…" / "Add Folder…").
 3. **Choose a sharing mode:**
    - **Local Network Only** (default) — for people on the same Wi-Fi as you. No PIN needed, though you can turn one on.
-   - **Global** — for someone who isn't on your network. Requires a free ngrok account and authtoken (one-time setup, see below) and **automatically requires a PIN** — you can't turn that off in this mode, since anyone with the link could otherwise reach it.
+   - **Global** — for someone who isn't on your network. No signup or account needed — cloudflared downloads itself automatically the first time you use it — and **automatically requires a PIN** — you can't turn that off in this mode, since anyone with the link could otherwise reach it.
 4. **Click "Start Sharing."** An address appears, along with a QR code. If PIN protection is on, the PIN shows on screen too — tell the other person what it is (or just send the QR code / link, which unlocks automatically).
 5. **Give that address (or QR code) to whoever you're sharing with.**
 6. **They open it in any web browser.** If a PIN is set and they typed the address by hand, they'll be asked to enter it once. They'll see everything you've shared and can download it.
@@ -58,20 +58,13 @@ type `localshare` in a terminal.
    supports photos and videos.
 9. **When you're done, click "Stop Sharing."**
 
-### Setting up internet sharing (one-time)
+### Setting up internet sharing
 
-ngrok requires a free account and authtoken — there's no anonymous
-option anymore:
-1. Sign up (free): https://dashboard.ngrok.com/signup
-2. Copy your authtoken: https://dashboard.ngrok.com/get-started/your-authtoken
-3. Paste it into LocalShare: Settings → Sharing → ngrok Authtoken
-
-No separate program to install — the app manages the actual `ngrok`
-program itself automatically the first time it's needed. LocalShare's
-own "❓ Setup Guide" button walks through these same steps with direct
-links.
-
-That's it — select "Global" mode in LocalShare and click Start Sharing.
+Nothing to set up — select "Global" mode and click Start Sharing.
+The first time, LocalShare downloads `cloudflared` (Cloudflare's
+tunnel program, ~40MB) automatically, so that first connection takes
+a little longer; every connection after that is instant. No account,
+no signup, no separate installer.
 
 ---
 

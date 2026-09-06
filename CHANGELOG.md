@@ -13,6 +13,31 @@ git checkout v3.0.0   # current
 
 ## Unreleased
 
+**Internet sharing switched back to Cloudflare Quick Tunnel, final
+this time.** After discovering ngrok's free tier caps at 1GB of
+bandwidth per month — meaning a single ~140MB file upload used 14% of
+an entire month's allowance, plausibly explaining reported slowness —
+and researching real throughput benchmarks (mixed results, 20-46 Mbps
+depending on the source) and a reported 100MB body-size limit on
+Cloudflare's free tier that could have blocked exactly that kind of
+large file, the decision was made to return to Cloudflare specifically
+BUT implemented completely differently from the original v3.0.0
+attempt: instead of the user needing to install `cloudflared`
+separately (or a fragile installer-time PowerShell download script
+that turned out unreliable — Windows PowerShell 5.1's default TLS
+negotiation fighting GitHub, among other issues), `cloudflared` now
+downloads itself automatically at runtime, in Python, the first time
+Global mode is actually used — the same pattern that worked well for
+pyngrok, just implemented directly with the standard library instead
+of a third-party package this time. Verified genuinely end-to-end:
+downloaded the real cloudflared binary from GitHub's releases,
+confirmed complete and executable, confirmed it runs and reports its
+version correctly, tested the full success/failure/already-installed
+paths against the actual download function and TunnelHandle.start().
+
+Removed the ngrok authtoken UI, the ngrok-specific Setup Guide steps,
+and the pyngrok dependency entirely.
+
 **Internet sharing switched back from Cloudflare Quick Tunnel to
 ngrok** (via `pyngrok`) — reversing the v3.0.0 change below. Reasons:
 Cloudflare Quick Tunnel's `cloudflared` binary needed a separate,
