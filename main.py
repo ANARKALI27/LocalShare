@@ -19,6 +19,21 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
+# Qt Multimedia's FFmpeg backend logs fairly verbosely by default
+# (codec/format details for every media file it opens — this is
+# what's behind the video background feature). That logging comes
+# from native Qt/FFmpeg code, not Python, so it writes directly to the
+# OS-level stderr handle rather than through sys.stderr above — the
+# redirect just above this doesn't reach it at all. A windowed app
+# normally has no console/stderr handle attached to the process at
+# all, and on Windows, native code trying to write to that nonexistent
+# handle has been observed to cause Windows to allocate a visible
+# console window purely to give the output somewhere to go — which is
+# exactly the unwanted terminal window that shows up once a video
+# background is in use. Must be set before any PySide6/Qt module is
+# imported, since Qt reads this at library-load time, not later.
+os.environ.setdefault("QT_LOGGING_RULES", "qt.multimedia.ffmpeg.*=false")
+
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 

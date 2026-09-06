@@ -5,8 +5,8 @@ Explorer (or anywhere else) and emits their absolute paths.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QDragEnterEvent, QDragLeaveEvent, QDropEvent
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QLabel, QVBoxLayout, QWidget
 
 from app.gui.theme import DARK
 
@@ -30,15 +30,28 @@ class DropZone(QWidget):
         self._icon_label = QLabel("📂")
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._icon_label.setStyleSheet("font-size: 40px;")
+        self._add_readability_shadow(self._icon_label)
 
         self._text_label = QLabel("Drag & drop files or folders here")
         self._text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._text_label.setObjectName("DropZoneText")
+        self._add_readability_shadow(self._text_label)
 
         layout.addWidget(self._icon_label)
         layout.addWidget(self._text_label)
 
         self._apply_style()
+
+    def _add_readability_shadow(self, label: QLabel) -> None:
+        """Same technique as MainWindow's version — this widget's own
+        background is transparent (just a dashed border), so its icon
+        and text sit directly on whatever animated/image/video
+        background is active, which can be almost any color."""
+        shadow = QGraphicsDropShadowEffect(label)
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 1)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        label.setGraphicsEffect(shadow)
 
     def set_theme(self, colors: dict) -> None:
         """Called by MainWindow when the user switches theme."""

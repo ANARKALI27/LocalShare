@@ -291,12 +291,14 @@ class MainWindow(QMainWindow):
         title_row = QHBoxLayout()
         title = QLabel("LocalShare")
         title.setObjectName("Title")
+        self._add_readability_shadow(title)
         title_row.addWidget(title)
 
         version_label = QLabel(f"v{APP_VERSION}")
         version_label.setStyleSheet(
             f"color: {self.theme_colors['text_dim']}; font-size: 12px; padding-top: 6px;"
         )
+        self._add_readability_shadow(version_label)
         self._version_label = version_label  # kept for theme refresh
         title_row.addWidget(version_label)
 
@@ -527,6 +529,7 @@ class MainWindow(QMainWindow):
         # Shared items section
         section_label = QLabel("SHARED ITEMS")
         section_label.setObjectName("SectionLabel")
+        self._add_readability_shadow(section_label)
         root.addWidget(section_label)
 
         self.shared_list = QListWidget()
@@ -539,9 +542,12 @@ class MainWindow(QMainWindow):
         status_row = QHBoxLayout()
         self.status_dot = QLabel("○")
         self.status_dot.setObjectName("StatusDot")
+        self._add_readability_shadow(self.status_dot)
         self.status_label = QLabel("Ready to Share")
+        self._add_readability_shadow(self.status_label)
         self.address_label = QLabel("Address: —")
         self.address_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._add_readability_shadow(self.address_label)
         status_row.addWidget(self.status_dot)
         status_row.addWidget(self.status_label)
         status_row.addStretch()
@@ -553,6 +559,7 @@ class MainWindow(QMainWindow):
         # -- Sharing mode -----------------------------------------------------------
         mode_label = QLabel("SHARING MODE")
         mode_label.setObjectName("SectionLabel")
+        self._add_readability_shadow(mode_label)
         root.addWidget(mode_label)
 
         mode_row = QHBoxLayout()
@@ -1218,6 +1225,25 @@ class MainWindow(QMainWindow):
             colors["accent"] = self._custom_accent
             colors["accent_hover"] = self._compute_hover_color(self._custom_accent)
         return colors
+
+    def _add_readability_shadow(self, label: QLabel) -> None:
+        """
+        A subtle dark drop-shadow behind text that sits directly on
+        the animated/image/video background — not inside a card with
+        its own solid surface color. Theme text colors are fixed, but
+        a chosen background image/video can be almost any color, so
+        text that looks fine against the default dark background can
+        become close to unreadable against a bright photo or a light
+        moment in a video. This is the same technique subtitles and
+        game HUDs use: a soft dark outline keeps text legible against
+        whatever happens to be behind it, without needing to know what
+        that is ahead of time.
+        """
+        shadow = QGraphicsDropShadowEffect(label)
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 1)
+        shadow.setColor(QColor(0, 0, 0, 200))
+        label.setGraphicsEffect(shadow)
 
     def _apply_theme(self) -> None:
         """Rebuilds theme_colors from the current base + any custom accent
