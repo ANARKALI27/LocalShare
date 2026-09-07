@@ -1,9 +1,6 @@
 """
-Splash screen shown briefly when the app starts: "LocalShare" over an
-animated version of the app's own share-glyph icon (three connected
-nodes, on the same blue-to-purple gradient as the actual app icon) —
-previously a plain dark panel with generic gold/white/blue sparkles
-that had no visual connection to the app's actual branding.
+Splash screen shown briefly when the app starts: "LocalShare" with a
+sparkle/glitter animation and a "Developed By ANARKALI" credit line.
 
 The window itself is genuinely transparent (desktop shows through
 outside the rounded panel) rather than a solid rectangle — only the
@@ -14,57 +11,79 @@ transition; exit is a plain fade-out, unchanged from before.
 from __future__ import annotations
 
 import math
+import random
 import time
 
 from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QRadialGradient
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QRadialGradient
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
 
-# Same two colors as assets/localshare.ico/.png — the splash panel
-# should look like it belongs to the same app as its own taskbar icon.
-_GRADIENT_START = QColor(76, 141, 255)   # #4C8DFF
-_GRADIENT_END = QColor(168, 85, 247)     # #A855F7
+from app.gui.theme import DARK
+
+
+class _Sparkle:
+    """One glinting particle: fixed position, independent twinkle timing/color."""
+
+    __slots__ = ("x", "y", "phase", "speed", "size", "color")
+
+    def __init__(self) -> None:
+        self.x = random.uniform(0.05, 0.95)  # normalized 0..1, scaled to widget size at paint time
+        self.y = random.uniform(0.05, 0.95)
+        self.phase = random.uniform(0, math.tau)
+        self.speed = random.uniform(1.5, 3.2)
+        self.size = random.uniform(2.0, 5.0)
+        self.color = random.choice(
+            [
+                QColor(255, 255, 255),  # white
+                QColor(255, 214, 102),  # gold
+                QColor(124, 178, 255),  # soft blue
+            ]
+        )
 
 
 class SplashScreen(QWidget):
     """
-    A frameless, transparent, centered window that shows the animated
-    share-glyph on a gradient panel behind the title/subtitle, fades +
+    A frameless, transparent, centered window that shows a sparkle
+    animation behind the title/subtitle on a rounded panel, fades +
     scales in, holds, fades out, then emits `finished` so the caller
     can show the real MainWindow.
     """
 
     finished = Signal()
 
+    SPARKLE_COUNT = 28
+
     def __init__(self, hold_ms: int = 1400, fade_ms: int = 500) -> None:
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         # Makes the window's own background genuinely transparent — only
-        # what paintEvent actually draws (the rounded panel + glyph)
+        # what paintEvent actually draws (the rounded panel + sparkles)
         # is visible; everything else shows the desktop through.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.resize(420, 260)
 
+        self._panel_color = QColor(DARK["bg"])
+        self._panel_color.setAlphaF(0.92)  # slightly translucent panel, not fully opaque
+        self._sparkles = [_Sparkle() for _ in range(self.SPARKLE_COUNT)]
         self._start_time = time.monotonic()
         self._scale = 0.92  # entrance starts slightly zoomed-out, animates to 1.0
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(6)
-        layout.setContentsMargins(0, 70, 0, 0)  # leaves room above for the glyph, drawn in paintEvent
 
         title = QLabel("LocalShare")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
-            "color: white; font-size: 34px; font-weight: 700; "
-            'font-family: "Segoe UI", sans-serif; background: transparent;'
+            f"color: {DARK['text']}; font-size: 34px; font-weight: 700; "
+            f'font-family: "Segoe UI", sans-serif; background: transparent;'
         )
 
         subtitle = QLabel("Developed By ANARKALI")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(
-            "color: rgba(255, 255, 255, 0.75); font-size: 13px; letter-spacing: 1px; "
-            'font-family: "Segoe UI", sans-serif; background: transparent;'
+            f"color: {DARK['text_dim']}; font-size: 13px; letter-spacing: 1px; "
+            f'font-family: "Segoe UI", sans-serif; background: transparent;'
         )
 
         layout.addWidget(title)
@@ -94,16 +113,16 @@ class SplashScreen(QWidget):
         self._fade_ms = fade_ms
         self._fade_out_anim: QPropertyAnimation | None = None
 
-        # Drives the glyph's pulse animation while the splash is visible.
-        self._glyph_timer = QTimer(self)
-        self._glyph_timer.setInterval(33)  # ~30fps — smooth enough for a slow pulse, lighter than 60fps
-        self._glyph_timer.timeout.connect(self.update)
+        # Redraws the sparkle field on a steady tick while the splash is visible.
+        self._sparkle_timer = QTimer(self)
+        self._sparkle_timer.setInterval(50)  # ~20fps — plenty smooth for a subtle background glint
+        self._sparkle_timer.timeout.connect(self.update)
 
     def start(self) -> None:
         self._center_on_screen()
         self.show()
         self._fade_in.start()
-        self._glyph_timer.start()
+        self._sparkle_timer.start()
         self._scale_start_time = time.monotonic()
         self._scale_timer.start()
         QTimer.singleShot(self._fade_ms + self._hold_ms, self._fade_out)
@@ -136,78 +155,35 @@ class SplashScreen(QWidget):
         # transparency actually visible (desktop shows through the
         # corners/margins outside this shape) rather than just being a
         # technically-transparent-but-visually-identical solid window.
-        # Filled with the same diagonal gradient as the app's own icon,
-        # rather than a plain dark color, so the splash actually looks
-        # like it belongs to this app.
         panel_rect = QRectF(0, 0, w, h)
         path = QPainterPath()
         path.addRoundedRect(panel_rect, 22, 22)
-        gradient = QLinearGradient(0, 0, w, h)
-        gradient.setColorAt(0.0, _GRADIENT_START)
-        gradient.setColorAt(1.0, _GRADIENT_END)
-        painter.fillPath(path, gradient)
-        painter.setClipPath(path)  # keep the glyph confined to the panel shape
+        painter.fillPath(path, self._panel_color)
+        painter.setClipPath(path)  # keep sparkles confined to the panel shape
 
-        self._draw_glyph(painter, w)
+        elapsed = time.monotonic() - self._start_time
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        for sp in self._sparkles:
+            twinkle = 0.15 + 0.85 * abs(math.sin(elapsed * sp.speed + sp.phase))
+            color = QColor(sp.color)
+            color.setAlphaF(twinkle * 0.9)
+
+            cx, cy = sp.x * w, sp.y * h
+            radius = sp.size * (0.6 + 0.4 * twinkle)
+
+            gradient = QRadialGradient(QPointF(cx, cy), radius * 2)
+            gradient.setColorAt(0.0, color)
+            faded = QColor(color)
+            faded.setAlpha(0)
+            gradient.setColorAt(1.0, faded)
+
+            painter.setBrush(gradient)
+            painter.drawEllipse(QPointF(cx, cy), radius * 2, radius * 2)
 
         painter.end()
         # Qt paints child widgets (the title/subtitle labels) after this
-        # returns, so they naturally layer on top of the glyph.
-
-    def _draw_glyph(self, painter: QPainter, panel_width: int) -> None:
-        """
-        The same three-node share glyph as the app's icon, centered in
-        the upper portion of the panel (the labels below occupy the
-        rest). Animated with a soft pulse on each node and a small dot
-        traveling along each connecting line, suggesting data actively
-        moving between the nodes — a loading-screen animation that's
-        actually about what this app does, not a generic effect.
-        """
-        elapsed = time.monotonic() - self._start_time
-        white = QColor(255, 255, 255)
-
-        cx = panel_width / 2 - 30
-        cy = 70.0
-        top = QPointF(cx + 70, cy - 35)
-        bottom = QPointF(cx + 70, cy + 35)
-        center = QPointF(cx, cy)
-
-        painter.setPen(QColor(255, 255, 255, 130))
-        painter.drawLine(center, top)
-        painter.drawLine(center, bottom)
-
-        # A soft pulsing glow behind the main node, breathing slowly —
-        # this is the "loading" cue, replacing the old sparkle field.
-        pulse = 0.5 + 0.5 * math.sin(elapsed * 2.4)
-        glow_radius = 22 + 6 * pulse
-        glow = QRadialGradient(center, glow_radius)
-        glow_color = QColor(white)
-        glow_color.setAlphaF(0.35 * pulse)
-        glow.setColorAt(0.0, glow_color)
-        faded = QColor(white)
-        faded.setAlpha(0)
-        glow.setColorAt(1.0, faded)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(glow)
-        painter.drawEllipse(center, glow_radius, glow_radius)
-
-        painter.setBrush(white)
-        painter.drawEllipse(center, 15, 15)
-        painter.drawEllipse(top, 11, 11)
-        painter.drawEllipse(bottom, 11, 11)
-
-        # Small dots traveling from the main node outward along each
-        # line, looping — visually reads as "sending," matching what
-        # the icon's static version can only imply.
-        for target, phase_offset in ((top, 0.0), (bottom, 0.5)):
-            t = (elapsed * 0.6 + phase_offset) % 1.0
-            travel_x = center.x() + (target.x() - center.x()) * t
-            travel_y = center.y() + (target.y() - center.y()) * t
-            dot_alpha = math.sin(t * math.pi)  # fades in at the start, out at the end of each trip
-            dot_color = QColor(white)
-            dot_color.setAlphaF(max(0.0, dot_alpha))
-            painter.setBrush(dot_color)
-            painter.drawEllipse(QPointF(travel_x, travel_y), 4, 4)
+        # returns, so they naturally layer on top of the sparkle field.
 
     def _fade_out(self) -> None:
         fade_out = QPropertyAnimation(self._opacity_effect, b"opacity", self)
@@ -220,7 +196,7 @@ class SplashScreen(QWidget):
         self._fade_out_anim = fade_out  # keep a reference so it isn't garbage-collected mid-animation
 
     def _on_fade_out_done(self) -> None:
-        self._glyph_timer.stop()
+        self._sparkle_timer.stop()
         self.close()
         self.finished.emit()
 

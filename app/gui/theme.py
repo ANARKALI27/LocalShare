@@ -120,8 +120,8 @@ SLATE = {
 # Registry of every selectable theme, in the order they should appear
 # in the picker. "Default Dark" and "Light" reuse the original DARK/
 # LIGHT dicts directly — same object, not a copy — so anything that
-# still imports DARK/LIGHT by name (drop_zone.py) keeps working
-# unchanged.
+# still imports DARK/LIGHT by name (drop_zone.py, splash_screen.py)
+# keeps working unchanged.
 THEMES: dict[str, dict] = {
     "Default Dark": DARK,
     "Midnight": MIDNIGHT,
