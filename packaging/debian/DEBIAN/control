@@ -1,5 +1,5 @@
 Package: localshare
-Version: 1.0.0
+Version: 3.1.2
 Section: net
 Priority: optional
 Architecture: amd64

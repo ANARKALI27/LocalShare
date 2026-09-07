@@ -120,6 +120,14 @@ class AnimatedGradientBackground(QWidget):
 
     # -- performance / reduce motion -----------------------------------------------------------
 
+    @property
+    def mode(self) -> str:
+        """Current background mode ('solid'/'gradient'/'image'/'video') —
+        a public accessor for code outside this class (e.g. the memory
+        watchdog in main_window.py) that needs to know without
+        reaching into the underscore-prefixed internal attribute."""
+        return self._mode
+
     def set_performance_mode(self, mode: str) -> None:
         """Adjusts the animated-background frame rate. Quality/Balanced/
         Performance trade smoothness for lighter CPU/GPU use — a real,

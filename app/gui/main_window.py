@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 
 from app.gui.drop_zone import DropZone
 from app.gui.gradient_background import AnimatedGradientBackground, STYLES
+from app.gui.memory_watch import get_process_memory_mb
 from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
 import app.gui.hover_button as hover_button_module
@@ -268,6 +269,40 @@ class MainWindow(QMainWindow):
         # Slight delay so this doesn't compete with the splash screen /
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
+
+        # Video backgrounds use hardware-accelerated decoding on
+        # Windows, which is capable of leaking memory in ways this app
+        # can't itself fully diagnose or prevent (it's Windows Media
+        # Foundation's own decoder session, not this app's Python code)
+        # — this watchdog is a safety net that catches genuinely
+        # runaway growth and falls back to a safe background before it
+        # can crash the app, rather than a fix for a specific root cause.
+        self._memory_watchdog_timer = QTimer(self)
+        self._memory_watchdog_timer.setInterval(5000)
+        self._memory_watchdog_timer.timeout.connect(self._check_memory_watchdog)
+        self._memory_watchdog_timer.start()
+
+    def _check_memory_watchdog(self) -> None:
+        if self.gradient_background.mode != "video":
+            return  # only video mode has shown this risk — no reason to police memory otherwise
+        mem_mb = get_process_memory_mb()
+        if mem_mb is None:
+            return  # couldn't determine memory on this platform/configuration — nothing to act on
+        threshold_mb = 1536  # ~1.5GB — LocalShare's normal baseline is nowhere near this
+        if mem_mb > threshold_mb:
+            self.gradient_background.set_mode("solid")
+            self.bg_mode_solid_radio.setChecked(True)
+            QSettings("LocalShare", "LocalShare").setValue("background_mode", "solid")
+            self._refresh_background_subpanel_visibility("solid")
+            QMessageBox.warning(
+                self,
+                "Video background switched off",
+                f"LocalShare's memory use grew to {mem_mb:.0f} MB while playing your video "
+                "background, well beyond what's normal — switched back to a solid background "
+                "automatically to avoid a crash. This points to a video decoding issue on this "
+                "system rather than something in LocalShare's own logic; a different video file "
+                "may behave better, or try Image or Gradient instead.",
+            )
 
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:

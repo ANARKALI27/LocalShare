@@ -9,7 +9,7 @@
 ; separate values (this file isn't Python) and won't sync themselves.
 
 #define MyAppName "LocalShare"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "3.1.2"
 #define MyAppPublisher "ANARKALI"
 #define MyAppExeName "LocalShare.exe"
 
