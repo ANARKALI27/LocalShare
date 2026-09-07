@@ -79,6 +79,23 @@ class AnimatedGradientBackground(QWidget):
         self._video_sink = None
         self._current_video_image: QImage | None = None
         self._video_error: str | None = None
+        # Every incoming frame gets converted to a full QImage via
+        # toImage() regardless of the source video's own frame rate —
+        # for a 4K/60fps wallpaper video, that's a large image being
+        # allocated up to 60 times a second with no throttling and no
+        # downscaling at all, which is a very plausible explanation
+        # for runaway memory growth (each full-res frame held briefly
+        # before being replaced is still real allocation/deallocation
+        # churn, and if anything in the native Qt/FFmpeg layer along
+        # that path doesn't release cleanly — something no amount of
+        # correct Python reference-counting can fix from this side —
+        # doing it 60x/second instead of ~24x/second makes any such
+        # leak proportionally worse). A background doesn't need to be
+        # buttery-smooth 60fps, so both a rate cap and a size cap are
+        # applied below regardless of the source video's own numbers.
+        self._last_video_frame_time = 0.0
+        self._video_frame_min_interval = 1.0 / 24.0  # cap processing at ~24fps
+        self._video_frame_max_dimension = 1280  # background use doesn't need source resolution
 
         self._timer = QTimer(self)
         self._timer.setInterval(50)  # ~20fps default (Balanced) — see set_performance_mode()
@@ -250,10 +267,31 @@ class AnimatedGradientBackground(QWidget):
         self._video_sink = sink
 
     def _on_video_frame(self, frame) -> None:
+        now = time.monotonic()
+        if now - self._last_video_frame_time < self._video_frame_min_interval:
+            return  # dropped, not processed — see the throttling note in __init__
+        self._last_video_frame_time = now
+
         image = frame.toImage()
-        if not image.isNull():
-            self._current_video_image = image
-            self.update()
+        if image.isNull():
+            return
+
+        # Downscale before storing — a background doesn't need source
+        # resolution, and holding a full 4K QImage (which can be
+        # 30MB+ per frame uncompressed) for every processed frame is
+        # exactly the kind of per-frame cost that turns "somewhat
+        # wasteful" into "crashes the app" once combined with however
+        # many frames actually get processed per second.
+        if max(image.width(), image.height()) > self._video_frame_max_dimension:
+            image = image.scaled(
+                self._video_frame_max_dimension,
+                self._video_frame_max_dimension,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        self._current_video_image = image
+        self.update()
 
     def _on_video_error(self, error, error_string: str) -> None:
         self._video_error = error_string or "Unknown video playback error"

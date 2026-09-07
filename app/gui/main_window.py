@@ -2015,8 +2015,11 @@ class MainWindow(QMainWindow):
         video_speed_row.addWidget(self.video_speed_slider)
         video_panel_layout.addLayout(video_speed_row)
         video_note = QLabel(
-            "Video backgrounds are the least-tested part of LocalShare — if playback "
-            "looks wrong or the app slows down, switch back to Solid or Gradient."
+            "Video backgrounds are the least-tested part of LocalShare. Frames are "
+            "automatically capped in resolution and processing rate to keep memory use "
+            "reasonable, but a very high-resolution source video (4K+) will still use more "
+            "memory than a smaller one — if you see high memory use or a crash, try a "
+            "lower-resolution video file, or switch back to Solid or Gradient."
         )
         video_note.setWordWrap(True)
         video_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
