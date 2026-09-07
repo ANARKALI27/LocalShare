@@ -275,14 +275,32 @@ class AnimatedGradientBackground(QWidget):
         self._video_sink = sink
 
     def _on_video_frame(self, frame) -> None:
-        now = time.monotonic()
-        if now - self._last_video_frame_time < self._video_frame_min_interval:
-            return  # dropped, not processed — see the throttling note in __init__
-        self._last_video_frame_time = now
-
+        # Convert EVERY incoming frame immediately, regardless of the
+        # throttling below — this used to return early for "too soon"
+        # frames without ever calling toImage() on them at all. That
+        # was a real bug, not just a missed optimization: frames from
+        # a hardware-accelerated decoder (confirmed in use here — see
+        # the MFT/Media Foundation logging this system produces) often
+        # come from a small, fixed pool of native buffers that the
+        # decoder can only reuse once a frame has actually been
+        # released — which toImage() does, and simply letting a
+        # QVideoFrame object go out of scope unconverted may not,
+        # depending on the backend. Skipping that conversion for most
+        # frames (this throttles to ~24fps, but a 1080p60 video is
+        # producing frames well over twice that) can starve the
+        # decoder's buffer pool, which is a well-documented category of
+        # unbounded native-memory growth with QtMultimedia — consistent
+        # with "crashes using 8GB of RAM" reported after switching to a
+        # video background specifically.
         image = frame.toImage()
         if image.isNull():
             return
+
+        now = time.monotonic()
+        if now - self._last_video_frame_time < self._video_frame_min_interval:
+            return  # the frame's native buffer is already released above; only the
+            # comparatively cheap scale/store/repaint work below is actually skipped
+        self._last_video_frame_time = now
 
         # Downscale before storing — a background doesn't need source
         # resolution, and holding a full 4K QImage (which can be
