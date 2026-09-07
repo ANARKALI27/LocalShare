@@ -1,151 +1,145 @@
 ==================================================
-LocalShare - Aasan Manual (Hindi)
+LocalShare - Simple Manual (English)
 ==================================================
 
-Ye file bahut simple bhasha mein batati hai ki LocalShare install
-kaise karein, use kaise karein, aur Internet par share (Cloudflare)
-kaise karein.
+This file explains, in plain simple language, how to install
+LocalShare, how to use it, and how to share over the Internet using
+Cloudflare.
 
-ZAROORI BAAT: Pehle ye app ngrok use karta tha, lekin ab sirf
-CLOUDFLARE use hota hai - isliye kisi account ya sign up ki zaroorat
-nahi hai. Neeche sirf Cloudflare wala tareeka bataya gaya hai.
-
---------------------------------------------------
-1. WINDOWS PAR INSTALL KAISE KAREIN
---------------------------------------------------
-
-1. LocalShareSetup.exe file download karein (ya project se khud
-   banayein - neeche "Khud Build Karna" section dekhein).
-2. Us file par double-click karein.
-3. Agar Windows koi warning dikhaye ("Windows protected your PC"),
-   to "More info" par click karein, phir "Run anyway" dabayein. Ye
-   warning isliye aati hai kyunki ye app kisi badi company se signed
-   nahi hai - nuksaan wali baat nahi hai.
-4. Setup ke instructions follow karein - bas Next, Next, Install
-   dabate jayein.
-5. Install hone ke baad, LocalShare apne aap khul jayega (ya Start
-   Menu se kholein).
-
-Uninstall karna ho to: Windows Settings > Apps > LocalShare dhoondhein
-> Uninstall dabayein.
+IMPORTANT: This app used to use ngrok, but now it uses ONLY
+CLOUDFLARE - so no account or sign up is needed at all. Only the
+Cloudflare method is explained below.
 
 --------------------------------------------------
-2. LINUX (.deb) PAR INSTALL KAISE KAREIN
+1. HOW TO INSTALL ON WINDOWS
 --------------------------------------------------
 
-Agar aapke paas localshare_*.deb file hai (Ubuntu, Debian, Linux Mint
-jaise systems ke liye):
+1. Download the LocalShareSetup.exe file (or build it yourself from
+   the project - see "Building It Yourself" section below).
+2. Double-click that file.
+3. If Windows shows a warning ("Windows protected your PC"), click
+   "More info", then click "Run anyway". This warning appears because
+   the app isn't signed by a big company - it's not harmful.
+4. Follow the setup instructions - just keep clicking Next, Next,
+   Install.
+5. Once installed, LocalShare will open automatically (or open it
+   from the Start Menu).
 
-Tareeka 1 - Double-click se:
-  1. .deb file par double-click karein.
-  2. Jo Software installer khule, usme "Install" dabayein.
-  3. Apna password daalein (agar mange).
+To uninstall: Windows Settings > Apps > find LocalShare > Uninstall.
 
-Tareeka 2 - Terminal se (zyada bharosemand):
+--------------------------------------------------
+2. HOW TO INSTALL ON LINUX (.deb)
+--------------------------------------------------
+
+If you have a localshare_*.deb file (for Ubuntu, Debian, Linux Mint,
+and similar systems):
+
+Method 1 - Double-click:
+  1. Double-click the .deb file.
+  2. In the Software installer that opens, click "Install".
+  3. Enter your password if asked.
+
+Method 2 - Terminal (more reliable):
   sudo dpkg -i localshare_*.deb
   sudo apt-get install -f
-  (dusri line - agar koi dependency missing ho to ye use theek kar
-  degi)
+  (the second line fixes any missing dependencies automatically)
 
-Install hone ke baad, LocalShare apne Applications menu mein mil
-jayega.
+After installing, LocalShare will show up in your Applications menu.
 
-Uninstall karna ho to:
+To uninstall:
   sudo apt-get remove localshare
 
 --------------------------------------------------
-3. LOCALSHARE USE KAISE KAREIN (BASIC)
+3. HOW TO USE LOCALSHARE (BASICS)
 --------------------------------------------------
 
-1. LocalShare kholein.
-2. Files ya Folder ko khinchkar (drag & drop) window mein daalein -
-   ya "Add Files..." / "Add Folder..." button dabayein.
-3. Sharing Mode chunein:
-   - Local Network Only (default) - sirf un logon ke liye jo aapke
-     saath same Wi-Fi par hain. Koi PIN zaroori nahi (chahein to
-     laga sakte hain).
-   - Global - kisi bhi jagah se kisi ko bhi share karne ke liye,
-     chahe wo aapke Wi-Fi par na ho. Isme PIN automatically lag jata
-     hai (band nahi kar sakte, security ke liye).
-4. "Start Sharing" dabayein. Ek address (link) aur QR code dikh
-   jayega.
-5. Wo address (ya QR code) jise share karna hai, use bhej dein.
-6. Saamne wala vyakti us link ko kisi bhi browser mein khol sakta
-   hai - files dekh sakta hai, download kar sakta hai, aur (agar
-   folder ke andar hai) apni files upload bhi kar sakta hai.
-7. Kaam khatam hone par "Stop Sharing" daba dein.
+1. Open LocalShare.
+2. Drag and drop files or a folder into the window - or click
+   "Add Files..." / "Add Folder...".
+3. Choose a Sharing Mode:
+   - Local Network Only (default) - for people on the same Wi-Fi as
+     you. No PIN needed (you can turn one on if you want).
+   - Global - for sharing with anyone, anywhere, even if they're not
+     on your Wi-Fi. A PIN is required automatically in this mode (it
+     can't be turned off, for security).
+4. Click "Start Sharing." An address (link) and a QR code will
+   appear.
+5. Send that address (or the QR code) to whoever you're sharing
+   with.
+6. They can open that link in any web browser - view files, download
+   them, and (if it's a folder) upload their own files back too.
+7. When you're done, click "Stop Sharing."
 
 --------------------------------------------------
-4. INTERNET PAR SHARE KARNA (CLOUDFLARE, "GLOBAL" MODE)
+4. SHARING OVER THE INTERNET (CLOUDFLARE, "GLOBAL" MODE)
 --------------------------------------------------
 
-Sabse achhi baat: kuchh bhi install ya setup karne ki zaroorat nahi
-hai. Koi account nahi, koi sign up nahi, koi password nahi.
+The best part: there's nothing to install or set up. No account, no
+sign up, no password.
 
-Kaise use karein:
+How to use it:
 
-1. LocalShare mein "Global" mode chunein (Local Network Only ki
-   jagah).
-2. "Start Sharing" dabayein.
-3. PEHLI BAAR use karte samay, LocalShare apne aap cloudflared naam
-   ki ek chhoti si file (lagbhag 40MB) download kar lega - isme kuchh
-   seconds lag sakte hain. Ye sirf EK BAAR hota hai; agli baar se
-   turant chalu ho jayega.
-4. Kuchh hi seconds mein ek Internet address mil jayega (jaise
-   https://kuchh-shabd.trycloudflare.com) - yahi link saamne wale ko
-   bhejni hai. Ye link duniya mein kahin se bhi khul sakti hai.
-5. PIN bhi screen par dikhega (Global mode mein PIN zaroori hai) - wo
-   bhi saamne wale ko bata dein, ya sirf QR code bhej dein (usme PIN
-   apne aap shaamil rehta hai).
+1. In LocalShare, select "Global" mode instead of "Local Network
+   Only."
+2. Click "Start Sharing."
+3. The FIRST TIME you use it, LocalShare will automatically download
+   a small file called cloudflared (about 40MB) - this can take a
+   few seconds. This only happens ONCE; after that it starts
+   instantly every time.
+4. Within a few seconds you'll get an Internet address (something
+   like https://some-words.trycloudflare.com) - send this link to
+   whoever you're sharing with. It can be opened from anywhere in the
+   world.
+5. A PIN will also show on screen (PIN is required in Global mode) -
+   share that too, or just send the QR code (which already includes
+   the PIN automatically).
 
-Agar automatic download fail ho jaye (rare case):
+If the automatic download fails (rare case):
 
-Agar aapke network/firewall ki wajah se automatic download kaam na
-kare, to cloudflared ko manually bhi install kar sakte hain:
+If your network/firewall blocks the automatic download, you can
+install cloudflared manually:
 
-  Windows (Command Prompt/PowerShell mein):
+  Windows (in Command Prompt/PowerShell):
     winget install --id Cloudflare.cloudflared
 
-  Linux par (aasan tareeka - kisi bhi distro par chalta hai):
-    Seedhe binary file download karein (koi package manager setup
-    nahi chahiye):
+  Linux (easiest way - works on any distro):
+    Download the binary file directly (no package manager setup
+    needed):
     https://github.com/cloudflare/cloudflared/releases/latest
 
-    (cloudflared-linux-amd64 wali file chunein, phir use executable
-    banayein: chmod +x cloudflared-linux-amd64)
+    (choose the cloudflared-linux-amd64 file, then make it
+    executable: chmod +x cloudflared-linux-amd64)
 
-  Ya agar Ubuntu/Debian par apt se install karna hai, to pehle
-  Cloudflare ki apni repository add karni hogi - poori jaankari yahan
-  hai:
+  Or, if you want to install it via apt on Ubuntu/Debian, you first
+  need to add Cloudflare's own repository - full instructions here:
     https://pkg.cloudflare.com/index.html
-  (sirf "apt-get install cloudflared" se kaam nahi chalega, pehle
-  repo add karna zaroori hai)
+  (just running "apt-get install cloudflared" alone will NOT work -
+  you must add their repo first)
 
-Install karne ke baad LocalShare ko poori tarah band karke dobara
-kholein, phir "Global" mode try karein.
+After installing, fully close and reopen LocalShare, then try
+"Global" mode again.
 
-Yaad rakhne wali baatein (Cloudflare ke baare mein):
+Things worth knowing about Cloudflare:
 
-- Har baar jab aap "Start Sharing" dabate hain, ek NAYA link banta
-  hai - purana link "Stop Sharing" dabate hi band ho jata hai.
-- Ye link temporary/testing ke liye hai, bahut zyada traffic ya
-  hamesha chalu rakhne ke liye nahi bana hai - doston ke saath files
-  share karne ke liye bilkul sahi hai.
+- Every time you click "Start Sharing," a NEW link is created - the
+  old link stops working as soon as you click "Stop Sharing."
+- This link is meant for temporary/testing use, not for huge amounts
+  of traffic or staying online permanently - it's perfect for sharing
+  files with friends.
 
 --------------------------------------------------
-5. KHUD BUILD KARNA (SIRF AGAR SOURCE CODE SE BANA RAHE HAIN)
+5. BUILDING IT YOURSELF (ONLY IF BUILDING FROM SOURCE CODE)
 --------------------------------------------------
 
 Windows:
   build_installer.bat
-  (isse Output\LocalShareSetup.exe ban jayega)
+  (this creates Output\LocalShareSetup.exe)
 
 Linux (.deb):
   ./build_deb.sh
-  (isse ek .deb file ban jayegi jo upar bataye tareeke se install ho
-  sakti hai)
+  (this creates a .deb file that can be installed the way described
+  above)
 
 --------------------------------------------------
 
-Agar koi dikkat aaye, to README.md aur GUIDE.md mein aur detail mil
-jayegi (English mein).
+If you run into any issues, README.md and GUIDE.md have more detail.
