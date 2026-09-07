@@ -269,9 +269,6 @@ class MainWindow(QMainWindow):
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
 
-        if not QSettings("LocalShare", "LocalShare").value("has_shown_welcome_guide", False, type=bool):
-            QTimer.singleShot(600, self._show_welcome_guide)
-
     # -- UI construction -----------------------------------------------------------
     def _build_ui(self) -> None:
         # Wrapped in a scroll area so the window stays genuinely
@@ -307,11 +304,6 @@ class MainWindow(QMainWindow):
         title_row.addWidget(version_label)
 
         title_row.addStretch()
-
-        self.setup_guide_btn = HoverGlowButton("❓ Setup Guide", glow_color=self.theme_colors["accent"])
-        self.setup_guide_btn.setToolTip("Getting-started steps, including setting up Internet Sharing")
-        self.setup_guide_btn.clicked.connect(self._show_welcome_guide)
-        title_row.addWidget(self.setup_guide_btn)
 
         self.settings_btn = HoverGlowButton("⚙️ Settings", glow_color=self.theme_colors["accent"])
         self.settings_btn.setToolTip("Theme, accent color, and background options")
@@ -2178,61 +2170,6 @@ class MainWindow(QMainWindow):
         # applied at the QApplication level (see __init__/_apply_theme),
         # which Qt reliably cascades to every window including this one.
         self.settings_dialog.exec()
-
-    def _show_welcome_guide(self) -> None:
-        """
-        Shown once, automatically, the first time LocalShare runs —
-        also reachable anytime afterward via the '?' button next to
-        Settings, since a one-time-only dialog is easy to accidentally
-        dismiss before actually reading it.
-        """
-        QSettings("LocalShare", "LocalShare").setValue("has_shown_welcome_guide", True)
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Welcome to LocalShare")
-        dialog.setMinimumWidth(440)
-        layout = QVBoxLayout(dialog)
-        layout.setSpacing(14)
-
-        heading = QLabel("Welcome to LocalShare 👋")
-        heading.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {self.theme_colors['text']};")
-        layout.addWidget(heading)
-
-        intro = QLabel(
-            "Sharing on your local network (same Wi-Fi) works immediately — drag files in, "
-            "hit Start Sharing, and you're done. No account, no setup."
-        )
-        intro.setWordWrap(True)
-        intro.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 13px;")
-        layout.addWidget(intro)
-
-        internet_label = QLabel("Want to share over the Internet too?")
-        internet_label.setStyleSheet(f"font-weight: 600; color: {self.theme_colors['text']}; font-size: 13px;")
-        layout.addWidget(internet_label)
-
-        internet_note = QLabel(
-            "Just select \"Global\" instead of \"Local Network Only\" and hit Start Sharing — "
-            "no account or signup needed. The first time you use it, LocalShare downloads "
-            "cloudflared (Cloudflare's tunnel program, ~40MB) automatically, so that first "
-            "connection takes a little longer than usual — after that it's instant."
-        )
-        internet_note.setWordWrap(True)
-        internet_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
-        layout.addWidget(internet_note)
-
-        skip_note = QLabel("You can ignore all of this if you only need Local Network sharing.")
-        skip_note.setWordWrap(True)
-        skip_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
-        layout.addWidget(skip_note)
-
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        got_it_btn = HoverGlowButton("Got it", glow_color=self.theme_colors["accent"])
-        got_it_btn.clicked.connect(dialog.accept)
-        button_row.addWidget(got_it_btn)
-        layout.addLayout(button_row)
-
-        dialog.exec()
 
     def _check_for_updates(self) -> None:
         address = self.update_source_input.text().strip()
