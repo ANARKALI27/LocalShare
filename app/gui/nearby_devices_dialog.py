@@ -14,15 +14,29 @@ The dialog only ever READS from a DeviceDiscoveryService passed in by
 MainWindow — it doesn't own discovery itself, matching the separation
 the spec for this feature asked for (GUI receives device state
 updates rather than performing network discovery directly).
+
+Visual style: glassmorphism-inspired (translucent layered cards, soft
+light borders, ambient shadows), applied via QSS rgba backgrounds
+WITHIN this dialog's own opaque, natively-framed window — deliberately
+NOT via making the dialog window itself translucent. This app's own
+existing glass-effect feature for the main window explicitly avoids
+relying on real backdrop transparency, precisely because it isn't
+reliable across platforms without native compositor support (Windows
+Acrylic/Mica, etc.) that can't be verified without a real machine to
+test on for each one. This dialog follows that same lesson: the glass
+LOOK comes from translucent card backgrounds blending against this
+window's own solid content area, not from seeing whatever is actually
+behind the window.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,6 +51,30 @@ from app.gui.hover_button import HoverGlowButton
 from app.network.connection_tester import test_connection
 
 AUTO_REFRESH_INTERVAL_MS = 6000  # within the spec's suggested 5-10s range
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """'#RRGGBB' -> 'rgba(r, g, b, a)' for glass-style translucent QSS
+    backgrounds. Genuine OS-level window/backdrop blur (true
+    glassmorphism) isn't attempted here — see the module docstring for
+    why — this achieves the same visual language (translucent layered
+    panels, soft light borders) reliably within a single opaque
+    window, which doesn't depend on platform-specific compositor
+    support this project has no way to test."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _apply_glass_shadow(widget: QWidget, blur: int = 24, alpha: int = 90) -> None:
+    """Soft ambient shadow used throughout the glass styling below —
+    the closest reliable equivalent to a backdrop blur's soft edge
+    that QGraphicsDropShadowEffect can actually deliver."""
+    shadow = QGraphicsDropShadowEffect(widget)
+    shadow.setBlurRadius(blur)
+    shadow.setOffset(0, 4)
+    shadow.setColor(QColor(0, 0, 0, alpha))
+    widget.setGraphicsEffect(shadow)
 
 
 class _ConnectionTestWorker(QThread):
@@ -73,18 +111,22 @@ class _DeviceCard(QFrame):
 
         self.setObjectName("DeviceCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        surface_glass = _hex_to_rgba(theme_colors["surface"], 0.55)
+        surface_glass_hover = _hex_to_rgba(theme_colors["surface"], 0.72)
         self.setStyleSheet(
             f"""
             QFrame#DeviceCard {{
-                background-color: {theme_colors['surface']};
-                border-radius: 10px;
-                border: 1px solid {theme_colors['border']};
+                background-color: {surface_glass};
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.10);
             }}
             QFrame#DeviceCard:hover {{
-                border: 1px solid {theme_colors['accent']};
+                background-color: {surface_glass_hover};
+                border: 1px solid {_hex_to_rgba(theme_colors['accent'], 0.6)};
             }}
             """
         )
+        _apply_glass_shadow(self, blur=20, alpha=70)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -202,6 +244,13 @@ class NearbyDevicesDialog(QDialog):
 
         self.setWindowTitle("Nearby Devices")
         self.setMinimumSize(420, 480)
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {theme_colors['bg']};
+            }}
+            """
+        )
 
         root = QVBoxLayout(self)
 
@@ -222,6 +271,20 @@ class NearbyDevicesDialog(QDialog):
         code_row = QHBoxLayout()
         self.code_input = QLineEdit()
         self.code_input.setPlaceholderText("Enter Device Code (LS-XXXX-XXXX)")
+        self.code_input.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.5)};
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                padding: 8px 10px;
+                color: {theme_colors['text']};
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {_hex_to_rgba(theme_colors['accent'], 0.7)};
+            }}
+            """
+        )
         code_row.addWidget(self.code_input)
         connect_btn = HoverGlowButton("Connect", glow_color=theme_colors["accent"])
         connect_btn.clicked.connect(self._connect_by_code)
@@ -230,7 +293,9 @@ class NearbyDevicesDialog(QDialog):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         self.cards_container = QWidget()
+        self.cards_container.setStyleSheet("background: transparent;")
         self.cards_layout = QVBoxLayout(self.cards_container)
         self.cards_layout.addStretch()
         self.scroll_area.setWidget(self.cards_container)
