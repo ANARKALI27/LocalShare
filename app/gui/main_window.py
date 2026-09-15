@@ -78,7 +78,14 @@ from app.gui.update_checker import (
 from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
 from app.network.discovery_service import DeviceDiscoveryService
-from app.network.device_identity import get_device_name, get_or_create_device_code, regenerate_device_code, set_device_name
+from app.network.device_identity import (
+    get_device_name,
+    get_or_create_device_code,
+    get_or_create_write_token,
+    regenerate_device_code,
+    set_device_name,
+)
+from app.network import global_registry
 from app.server.tunnel import TunnelHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
@@ -157,6 +164,31 @@ class _UpdateDownloadWorker(QThread):
             self.finished_ok.emit(local_path)
         except RuntimeError as exc:
             self.finished_error.emit(str(exc))
+
+
+class _GlobalRegistryWorker(QThread):
+    """
+    Runs a global_registry call (register/unregister) off the GUI
+    thread — every one of these is a blocking network request to
+    Firebase, which would freeze the window if run directly. Errors
+    are swallowed rather than surfaced as a hard failure: if this
+    doesn't work (no internet, bad database URL, Firebase down),
+    Global Device ID connections just don't work this session, the
+    same "best-effort, never blocks anything else" philosophy as
+    every other network-optional feature in this app (LAN discovery,
+    the tunnel itself).
+    """
+
+    def __init__(self, action, *args) -> None:
+        super().__init__()
+        self._action = action
+        self._args = args
+
+    def run(self) -> None:
+        try:
+            self._action(*self._args)
+        except Exception:
+            pass
 
 
 class _TunnelStartWorker(QThread):
@@ -257,6 +289,10 @@ class MainWindow(QMainWindow):
         self._start_worker: _ServerStartWorker | None = None
         self._stop_worker: _ServerStopWorker | None = None
         self._tunnel_worker: _TunnelStartWorker | None = None
+        self._global_registry_worker: _GlobalRegistryWorker | None = None
+        self._global_heartbeat_timer = QTimer(self)
+        self._global_heartbeat_timer.timeout.connect(self._send_global_heartbeat)
+        self._last_registered_share_url: str | None = None
         self._local_address: str | None = None
         self._auto_update_worker: _UpdateCheckWorker | None = None
         self._update_download_worker: _UpdateDownloadWorker | None = None
@@ -1036,6 +1072,55 @@ class MainWindow(QMainWindow):
         self.tunnel_status_label.setText(f"Internet address: {share_url}")
         self.address_label.setText(f"Address: {share_url}")
         self._show_qr_code(share_url)
+        self._register_with_global_registry(share_url)
+
+    def _registry_url(self) -> str:
+        return QSettings("LocalShare", "LocalShare").value("global_registry_url", "", type=str).strip()
+
+    def _register_with_global_registry(self, share_url: str) -> None:
+        registry_url = self._registry_url()
+        if not registry_url:
+            return  # Global Device ID connect isn't configured — Global sharing itself still works fine
+        self._last_registered_share_url = share_url
+        worker = _GlobalRegistryWorker(
+            global_registry.register,
+            registry_url,
+            self.discovery_service.device_code,
+            get_or_create_write_token(),
+            share_url,
+            get_device_name(),
+            self.access_control.enabled,
+        )
+        self._global_registry_worker = worker
+        worker.start()
+        self._global_heartbeat_timer.start(global_registry.HEARTBEAT_INTERVAL_SECONDS * 1000)
+
+    def _send_global_heartbeat(self) -> None:
+        if self._last_registered_share_url is None:
+            self._global_heartbeat_timer.stop()
+            return
+        self._register_with_global_registry(self._last_registered_share_url)
+
+    def _unregister_from_global_registry(self) -> None:
+        self._global_heartbeat_timer.stop()
+        registry_url = self._registry_url()
+        if not registry_url or self._last_registered_share_url is None:
+            self._last_registered_share_url = None
+            return
+        self._last_registered_share_url = None
+        worker = _GlobalRegistryWorker(
+            global_registry.unregister,
+            registry_url,
+            self.discovery_service.device_code,
+            get_or_create_write_token(),
+        )
+        self._global_registry_worker = worker
+        worker.start()
+
+    def _save_global_registry_url(self) -> None:
+        QSettings("LocalShare", "LocalShare").setValue(
+            "global_registry_url", self.global_registry_url_input.text().strip()
+        )
 
     def _on_tunnel_failed(self, error: str) -> None:
         self.tunnel_status_label.setStyleSheet(
@@ -1171,6 +1256,7 @@ class MainWindow(QMainWindow):
         self.webdav_status_label.hide()
         self.webdav_checkbox.setEnabled(True)
 
+        self._unregister_from_global_registry()
         if self.tunnel_handle.is_running:
             self.tunnel_handle.stop()
         self.tunnel_status_label.hide()
@@ -1976,6 +2062,27 @@ class MainWindow(QMainWindow):
         regenerate_btn = HoverGlowButton("Regenerate Device Code", glow_color=self.theme_colors["accent"])
         regenerate_btn.clicked.connect(self._confirm_regenerate_device_code)
         layout.addWidget(regenerate_btn)
+
+        global_label = QLabel("CONNECT GLOBALLY (OPTIONAL)")
+        global_label.setObjectName("SectionLabel")
+        layout.addWidget(global_label)
+
+        global_note = QLabel(
+            "Connecting by Device ID over the internet (not just your local network) needs a "
+            "free Firebase project — this is a one-time setup on your own free account, not "
+            "something LocalShare can create for you. See GLOBAL_CONNECT_SETUP.md for the exact "
+            "steps. Paste your database's URL below once it's set up."
+        )
+        global_note.setWordWrap(True)
+        global_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(global_note)
+
+        self.global_registry_url_input = QLineEdit(
+            QSettings("LocalShare", "LocalShare").value("global_registry_url", "", type=str)
+        )
+        self.global_registry_url_input.setPlaceholderText("https://your-project-default-rtdb.firebaseio.com")
+        self.global_registry_url_input.editingFinished.connect(self._save_global_registry_url)
+        layout.addWidget(self.global_registry_url_input)
         layout.addStretch()
 
         # -- Appearance page --------------------------------------------------------------

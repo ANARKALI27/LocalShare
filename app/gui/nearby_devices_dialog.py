@@ -30,7 +30,9 @@ behind the window.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, Qt, QTimer, QUrl, Signal
+from datetime import datetime
+
+from PySide6.QtCore import QSettings, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,6 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.hover_button import HoverGlowButton
+from app.network import global_registry
 from app.network.connection_tester import test_connection
 
 AUTO_REFRESH_INTERVAL_MS = 6000  # within the spec's suggested 5-10s range
@@ -94,6 +97,26 @@ class _ConnectionTestWorker(QThread):
     def run(self) -> None:
         reachable = test_connection(self._ip, self._port)
         self.finished_test.emit(self._device_code, reachable)
+
+
+class _GlobalLookupWorker(QThread):
+    """Runs a global_registry.lookup() call off the GUI thread — same
+    reasoning as _ConnectionTestWorker above: it's a blocking network
+    request, which would freeze the dialog if run directly."""
+
+    finished_lookup = Signal(str, object)  # device_code, result dict or None
+
+    def __init__(self, registry_url: str, device_code: str) -> None:
+        super().__init__()
+        self._registry_url = registry_url
+        self._device_code = device_code
+
+    def run(self) -> None:
+        try:
+            result = global_registry.lookup(self._registry_url, self._device_code)
+        except global_registry.GlobalRegistryError:
+            result = None
+        self.finished_lookup.emit(self._device_code, result)
 
 
 class _DeviceCard(QFrame):
@@ -264,6 +287,7 @@ class NearbyDevicesDialog(QDialog):
         self.discovery_service = discovery_service
         self.theme_colors = theme_colors
         self._cards: list[_DeviceCard] = []
+        self._global_lookup_worker: _GlobalLookupWorker | None = None
 
         self.setWindowTitle("Nearby Devices")
         self.setMinimumSize(420, 480)
@@ -291,6 +315,20 @@ class NearbyDevicesDialog(QDialog):
         self.scan_status_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
         root.addWidget(self.scan_status_label)
 
+        connect_label = QLabel("CONNECT BY DEVICE ID")
+        connect_label.setStyleSheet(
+            f"color: {theme_colors['text_dim']}; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+        )
+        root.addWidget(connect_label)
+
+        connect_hint = QLabel(
+            "Works on your local network instantly. Reaching a device anywhere else on the "
+            "internet needs Global Connect set up in Settings → Device."
+        )
+        connect_hint.setWordWrap(True)
+        connect_hint.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 10px;")
+        root.addWidget(connect_hint)
+
         code_row = QHBoxLayout()
         self.code_input = QLineEdit()
         self.code_input.setPlaceholderText("Enter Device Code (LS-XXXX-XXXX)")
@@ -313,6 +351,16 @@ class NearbyDevicesDialog(QDialog):
         connect_btn.clicked.connect(self._connect_by_code)
         code_row.addWidget(connect_btn)
         root.addLayout(code_row)
+
+        # A device found this way could be on this LAN (found instantly,
+        # no network round-trip needed) or reached via the global
+        # registry (a real network lookup, so it takes a moment and
+        # deserves its own status line) — this label reports whichever
+        # actually happened, never implying a global device is nearby.
+        self.connect_status_label = QLabel("")
+        self.connect_status_label.setWordWrap(True)
+        self.connect_status_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
+        root.addWidget(self.connect_status_label)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -415,15 +463,52 @@ class NearbyDevicesDialog(QDialog):
         code = self.code_input.text().strip().upper()
         if not code:
             return
-        if self.discovery_service is None:
+
+        # LAN first, per the feature's own preference order — a device
+        # on the same network is found instantly with no network
+        # round-trip, and shouldn't wait on (or depend on) the global
+        # registry being configured at all.
+        if self.discovery_service is not None:
+            devices = self.discovery_service.registry.known_devices()
+            match = next((d for d in devices if d["device_code"] == code), None)
+            if match:
+                url = f"http://{match['ip']}:{match['port']}"
+                self.connect_status_label.setText(f"✓ Found on your local network — opening {url}")
+                QDesktopServices.openUrl(QUrl(url))
+                return
+
+        registry_url = QSettings("LocalShare", "LocalShare").value("global_registry_url", "", type=str).strip()
+        if not registry_url:
+            self.connect_status_label.setText(
+                f"No device found on this network with code {code}. To reach a device "
+                "anywhere else, set up Global Connect in Settings → Device."
+            )
             return
-        devices = self.discovery_service.registry.known_devices()
-        match = next((d for d in devices if d["device_code"] == code), None)
-        if match:
-            url = f"http://{match['ip']}:{match['port']}"
-            QDesktopServices.openUrl(QUrl(url))
-        else:
-            self.scan_status_label.setText(f"No device found on this network with code {code}")
+
+        self.connect_status_label.setText("Searching…")
+        worker = _GlobalLookupWorker(registry_url, code)
+        worker.finished_lookup.connect(self._on_global_lookup_result)
+        self._global_lookup_worker = worker
+        worker.start()
+
+    def _on_global_lookup_result(self, device_code: str, result: dict | None) -> None:
+        if result is None:
+            self.connect_status_label.setText(
+                f"Device not found\n\nCheck the Device ID and try again. ({device_code})"
+            )
+            return
+
+        if not result["online"]:
+            last_seen_text = datetime.fromtimestamp(result["last_seen"]).strftime("%I:%M %p") \
+                if result["last_seen"] else "unknown"
+            self.connect_status_label.setText(
+                f"Device not available\n\n{device_code} is currently offline.\n"
+                f"Last seen: {last_seen_text}"
+            )
+            return
+
+        self.connect_status_label.setText(f"✓ Found {result['device_name']} — connecting…")
+        QDesktopServices.openUrl(QUrl(result["tunnel_url"]))
 
     def closeEvent(self, event) -> None:
         self._auto_refresh_timer.stop()

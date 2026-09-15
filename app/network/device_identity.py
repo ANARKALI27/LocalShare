@@ -52,13 +52,40 @@ def get_or_create_device_code() -> str:
     return code
 
 
+def get_or_create_write_token() -> str:
+    """
+    A second, PRIVATE secret alongside the device code — used only to
+    prove ownership of this device's entry in the global connect
+    registry (see global_registry.py), never displayed or shared
+    anywhere. The device code identifies a device publicly; this token
+    is what lets that device (and only that device) update its own
+    registry entry, per the "Device ID is not an authentication
+    credential" distinction the feature's own design calls for.
+    Generated with the same cryptographically secure source as the
+    device code itself, at a length that's not meant to be typed by a
+    person (unlike the code), since it's never something a person
+    should need to see or share.
+    """
+    settings = QSettings("LocalShare", "LocalShare")
+    token = settings.value("global_write_token", "", type=str)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        settings.setValue("global_write_token", token)
+    return token
+
+
 def regenerate_device_code() -> str:
     """Explicitly replaces the stored code with a new one — only ever
     called from a user-initiated, confirmed action (see the Settings >
-    Device > Regenerate flow), never automatically."""
+    Device > Regenerate flow), never automatically. Also rotates the
+    write_token alongside it: the old code's registry entry (if any)
+    becomes orphaned regardless once nobody looks it up anymore, and a
+    new code should get a fresh token rather than reusing the old
+    device's private secret for a new public identity."""
     settings = QSettings("LocalShare", "LocalShare")
     code = generate_device_code()
     settings.setValue("device_code", code)
+    settings.setValue("global_write_token", secrets.token_urlsafe(32))
     return code
 
 

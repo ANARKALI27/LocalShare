@@ -207,6 +207,19 @@ entirely from that same Settings page.
 A device only appears here while it's actively sharing something
 (Start Sharing) — there's otherwise nothing to open at its address.
 
+### Connecting by Device ID over the internet
+
+The "Connect by Device ID" field tries your local network first, and —
+if you've set up Global Connect — falls back to finding the device
+anywhere on the internet using just its Device ID, no address or QR
+code needed from the other person. This needs a one-time, free setup
+on your own account (not something LocalShare can do for you): see
+[GLOBAL_CONNECT_SETUP.md](GLOBAL_CONNECT_SETUP.md) for the exact
+steps, then paste the resulting database URL into Settings → Device →
+Connect Globally. Actual file transfer is unchanged — it's the same
+Cloudflare tunnel and PIN protection Global sharing already uses; this
+only replaces "share your address" with "share your Device ID."
+
 ## Project structure
 
 ```

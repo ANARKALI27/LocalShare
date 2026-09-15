@@ -13,6 +13,55 @@ git checkout v3.0.0   # current
 
 ## Unreleased
 
+**Global Device ID Connect — connect to a device anywhere by its
+Device ID, not just on the same LAN.** Extends Nearby Devices: enter a
+Device ID in "Connect by Device ID" and LocalShare tries your local
+network first (instant), then falls back to a global lookup if not
+found locally.
+
+Deliberately built WITHOUT a custom signaling/relay server —
+LocalShare already has a free, zero-maintenance way to make a device
+reachable from the internet (the existing Cloudflare Tunnel behind
+"Global" sharing). The only missing piece for Device-ID-only
+connection was answering "where is this device right now," which is
+now a lookup against a free-tier Firebase Realtime Database the user
+sets up themselves (GLOBAL_CONNECT_SETUP.md has the exact steps — a
+few minutes on a free Google account, no server to rent or maintain).
+Actual file transfer is entirely unchanged: it's the same Cloudflare
+tunnel, PIN protection, and web UI Global sharing already used.
+
+Security: each device holds a private write_token (separate from its
+public Device ID, generated locally, never displayed) that must match
+before its registry entry can be overwritten — this is what stops
+someone from squatting an existing Device ID or redirecting it to a
+URL they control. Found and fixed two real holes in this before
+finalizing it, both through direct testing against a mock server
+replicating Firebase's actual REST behavior, not by inspection: (1) an
+initial security rule draft had a clause meant to permit deletion that
+actually permitted ANY write with an empty body regardless of token,
+and (2) an early "unregister" design that wrote only to a last_seen
+sub-field turned out to make the token comparison compare Firebase's
+existing stored value to itself, passing unconditionally regardless of
+who sent the request. Both are fixed: "going offline" is now a full,
+properly token-checked write (reusing the same path as a normal
+heartbeat) rather than an HTTP DELETE or a partial-field write, either
+of which turned out to have no way to carry proof of ownership.
+
+Online/offline status is based on a real heartbeat (every 30s while
+Global sharing is active) with a 90-second grace window before reading
+as offline — not just "a record exists," and stopping sharing marks
+the device offline immediately rather than waiting out that window.
+
+Not implemented, and deliberately so rather than guessed at: the
+spec's proposed interactive "incoming connection, accept/reject"
+prompt. That needs its own signaling round-trip between the two
+devices that hasn't been built or tested; Global mode's existing
+automatic PIN requirement is the access-control gate for now, which is
+a real, existing mechanism rather than newly-invented and unverified.
+True P2P/NAT traversal (STUN/TURN/WebRTC) was also not attempted —
+reusing the existing Cloudflare tunnel sidesteps needing it entirely
+for this phase, at the cost of not being genuinely peer-to-peer.
+
 **Nearby Devices — see and open other LocalShare installations on your
 network.** New "Nearby Devices" button opens a dialog listing other
 LocalShare instances discovered via LAN broadcast (no central server
