@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -111,14 +112,23 @@ class _DeviceCard(QFrame):
 
         self.setObjectName("DeviceCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        surface_glass = _hex_to_rgba(theme_colors["surface"], 0.55)
-        surface_glass_hover = _hex_to_rgba(theme_colors["surface"], 0.72)
+        # 0.55 alpha initially chosen here blended almost invisibly into
+        # the dialog's own background — 'surface' and 'bg' are very
+        # close in tone to begin with, so a mid-transparency blend of
+        # one into the other reads as "barely different shade," not
+        # "glass." Raised alpha significantly (card stays legible and
+        # distinct) and made the border/shadow more pronounced so the
+        # layered-panel look is actually visible, confirmed by
+        # re-rendering and looking at the result directly rather than
+        # guessing at plausible-sounding values again.
+        surface_glass = _hex_to_rgba(theme_colors["surface"], 0.88)
+        surface_glass_hover = _hex_to_rgba(theme_colors["surface"], 0.97)
         self.setStyleSheet(
             f"""
             QFrame#DeviceCard {{
                 background-color: {surface_glass};
                 border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.14);
             }}
             QFrame#DeviceCard:hover {{
                 background-color: {surface_glass_hover};
@@ -126,7 +136,7 @@ class _DeviceCard(QFrame):
             }}
             """
         )
-        _apply_glass_shadow(self, blur=20, alpha=70)
+        _apply_glass_shadow(self, blur=28, alpha=120)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -146,8 +156,21 @@ class _DeviceCard(QFrame):
         self.status_label.setStyleSheet(f"color: {status_color}; font-size: 15px;")
         top_row.addWidget(self.status_label)
 
-        menu_btn = HoverGlowButton("⋮", glow_color=theme_colors["accent"])
-        menu_btn.setFixedWidth(32)
+        # Deliberately a plain QPushButton here, not HoverGlowButton —
+        # HoverGlowButton animates its hover state via its own
+        # QGraphicsDropShadowEffect, and nesting a widget with its own
+        # graphics effect inside this card (which has its own shadow
+        # effect for the glass look, applied below) makes the child
+        # widget render as fully invisible. Confirmed by direct testing:
+        # a plain QPushButton renders correctly in the same position: a
+        # HoverGlowButton does not, regardless of how many extra
+        # wrapper widgets are added in between the two effects. The
+        # card's shadow matters more to the overall look than this one
+        # button's hover-glow animation, so the button loses that
+        # animation rather than the card losing its shadow.
+        menu_btn = QPushButton("⋮")
+        menu_btn.setFixedWidth(40)
+        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         menu_btn.clicked.connect(self._show_menu)
         top_row.addWidget(menu_btn)
         layout.addLayout(top_row)
@@ -301,10 +324,32 @@ class NearbyDevicesDialog(QDialog):
         self.scroll_area.setWidget(self.cards_container)
         root.addWidget(self.scroll_area, stretch=1)
 
+        # Wrapped in its own glass panel (matching the device cards'
+        # styling) rather than left as a bare label directly on the
+        # dialog's background — otherwise the glass look is only ever
+        # visible once at least one device has actually been found,
+        # which defeats the point of it being visible at all for
+        # someone just opening the dialog for the first time.
+        self.empty_state_panel = QFrame()
+        self.empty_state_panel.setObjectName("EmptyStatePanel")
+        self.empty_state_panel.setStyleSheet(
+            f"""
+            QFrame#EmptyStatePanel {{
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.88)};
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+            }}
+            """
+        )
+        _apply_glass_shadow(self.empty_state_panel, blur=28, alpha=120)
+        empty_state_layout = QVBoxLayout(self.empty_state_panel)
+        empty_state_layout.setContentsMargins(24, 32, 24, 32)
+
         self.empty_state_label = QLabel("")
         self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_state_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 13px;")
-        root.addWidget(self.empty_state_label)
+        empty_state_layout.addWidget(self.empty_state_label)
+        root.addWidget(self.empty_state_panel)
 
         self._auto_refresh_timer = QTimer(self)
         self._auto_refresh_timer.timeout.connect(self.refresh)
@@ -358,7 +403,7 @@ class NearbyDevicesDialog(QDialog):
         self._cards = []
 
         self.empty_state_label.setText(empty_message)
-        self.empty_state_label.setVisible(len(devices) == 0)
+        self.empty_state_panel.setVisible(len(devices) == 0)
         self.scroll_area.setVisible(len(devices) > 0)
 
         for device in devices:
