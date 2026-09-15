@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import socket
 import tempfile
 import time
 
@@ -55,6 +54,7 @@ from app.gui.gradient_background import AnimatedGradientBackground, STYLES
 from app.gui.memory_watch import get_process_memory_mb
 from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
+from app.gui.nearby_devices_dialog import NearbyDevicesDialog
 import app.gui.hover_button as hover_button_module
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import (
@@ -78,6 +78,7 @@ from app.gui.update_checker import (
 from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
 from app.network.discovery_service import DeviceDiscoveryService
+from app.network.device_identity import get_device_name, get_or_create_device_code, regenerate_device_code, set_device_name
 from app.server.tunnel import TunnelHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
@@ -230,18 +231,29 @@ class MainWindow(QMainWindow):
         self.server_handle = ServerHandle(self.share_manager, self.access_control)
         self.webdav_handle = WebDavHandle(self.share_manager)
         self.tunnel_handle = TunnelHandle()
-        try:
-            device_name = socket.gethostname()
-        except OSError:
-            device_name = "LocalShare"
         self.discovery_service = DeviceDiscoveryService(
-            name=device_name,
+            device_code=get_or_create_device_code(),
+            name=get_device_name(),
+            # Read fresh on every broadcast, not fixed here — the real
+            # port isn't known until the server actually starts
+            # (server_handle.port is None before that), and this
+            # service is constructed once at app startup, well before
+            # that happens.
+            get_port=lambda: self.server_handle.port,
             version=APP_VERSION,
             # Only announces itself while actually sharing something —
             # a device just sitting idle with nothing shared has
             # nothing useful for a "nearby device" to connect to.
-            get_address=lambda: self.server_handle.address if self.server_handle.is_running else None,
+            get_address=lambda: self.server_handle.host if self.server_handle.is_running else None,
         )
+        # Started immediately (not tied to "Start Sharing") — the
+        # listener needs to be up to discover OTHER devices regardless
+        # of whether this one is currently sharing anything itself; only
+        # the broadcast/announce side is gated on active sharing, via
+        # get_address returning None otherwise. Only started at all if
+        # the user hasn't opted out in Settings > Device.
+        if QSettings("LocalShare", "LocalShare").value("allow_device_discovery", True, type=bool):
+            self.discovery_service.start()
         self._start_worker: _ServerStartWorker | None = None
         self._stop_worker: _ServerStopWorker | None = None
         self._tunnel_worker: _TunnelStartWorker | None = None
@@ -339,6 +351,11 @@ class MainWindow(QMainWindow):
         title_row.addWidget(version_label)
 
         title_row.addStretch()
+
+        self.nearby_devices_btn = HoverGlowButton("\U0001F5A5\uFE0F Nearby Devices", glow_color=self.theme_colors["accent"])
+        self.nearby_devices_btn.setToolTip("Other LocalShare devices on your network")
+        self.nearby_devices_btn.clicked.connect(self._open_nearby_devices_dialog)
+        title_row.addWidget(self.nearby_devices_btn)
 
         self.settings_btn = HoverGlowButton("⚙️ Settings", glow_color=self.theme_colors["accent"])
         self.settings_btn.setToolTip("Theme, accent color, and background options")
@@ -1903,6 +1920,64 @@ class MainWindow(QMainWindow):
         layout.addWidget(cloudflared_note)
         layout.addStretch()
 
+        # -- Device page --------------------------------------------------------------
+        layout = add_page("Device")
+
+        device_heading = QLabel("Your LocalShare Device")
+        device_heading.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 15px; font-weight: 600;")
+        layout.addWidget(device_heading)
+
+        name_label = QLabel("DEVICE NAME")
+        name_label.setObjectName("SectionLabel")
+        layout.addWidget(name_label)
+
+        name_row = QHBoxLayout()
+        self.device_name_input = QLineEdit(get_device_name())
+        name_row.addWidget(self.device_name_input)
+        save_name_btn = HoverGlowButton("Save", glow_color=self.theme_colors["accent"])
+        save_name_btn.clicked.connect(self._save_device_name)
+        name_row.addWidget(save_name_btn)
+        layout.addLayout(name_row)
+
+        code_label = QLabel("DEVICE CODE")
+        code_label.setObjectName("SectionLabel")
+        layout.addWidget(code_label)
+
+        code_row = QHBoxLayout()
+        self.device_code_display = QLabel(self.discovery_service.device_code)
+        self.device_code_display.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.device_code_display.setStyleSheet(
+            f"color: {self.theme_colors['accent']}; font-size: 16px; font-weight: 600; "
+            f"font-family: monospace; background-color: {self.theme_colors['surface']}; "
+            "padding: 8px 12px; border-radius: 6px;"
+        )
+        code_row.addWidget(self.device_code_display)
+        copy_code_btn = HoverGlowButton("Copy Code", glow_color=self.theme_colors["accent"])
+        copy_code_btn.clicked.connect(self._copy_device_code)
+        code_row.addWidget(copy_code_btn)
+        layout.addLayout(code_row)
+
+        code_note = QLabel("This code identifies this LocalShare installation to other devices on your network.")
+        code_note.setWordWrap(True)
+        code_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(code_note)
+
+        discovery_label = QLabel("NETWORK DISCOVERY")
+        discovery_label.setObjectName("SectionLabel")
+        layout.addWidget(discovery_label)
+
+        self.allow_discovery_checkbox = QCheckBox("Allow LocalShare to discover nearby devices")
+        self.allow_discovery_checkbox.setChecked(
+            QSettings("LocalShare", "LocalShare").value("allow_device_discovery", True, type=bool)
+        )
+        self.allow_discovery_checkbox.toggled.connect(self._on_allow_discovery_toggled)
+        layout.addWidget(self.allow_discovery_checkbox)
+
+        regenerate_btn = HoverGlowButton("Regenerate Device Code", glow_color=self.theme_colors["accent"])
+        regenerate_btn.clicked.connect(self._confirm_regenerate_device_code)
+        layout.addWidget(regenerate_btn)
+        layout.addStretch()
+
         # -- Appearance page --------------------------------------------------------------
         layout = add_page("Appearance")
 
@@ -2208,6 +2283,47 @@ class MainWindow(QMainWindow):
         # applied at the QApplication level (see __init__/_apply_theme),
         # which Qt reliably cascades to every window including this one.
         self.settings_dialog.exec()
+
+    def _open_nearby_devices_dialog(self) -> None:
+        dialog = NearbyDevicesDialog(self.discovery_service, self.theme_colors, parent=self)
+        dialog.exec()
+
+    def _save_device_name(self) -> None:
+        new_name = self.device_name_input.text().strip()
+        if not new_name:
+            return
+        set_device_name(new_name)
+        # Updates the already-running discovery service immediately —
+        # without this, the change wouldn't take effect until the next
+        # app restart, since the service was constructed once at
+        # startup with whatever name was current then.
+        self.discovery_service.name = new_name
+        self.device_name_input.setText(new_name)
+
+    def _copy_device_code(self) -> None:
+        QApplication.clipboard().setText(self.discovery_service.device_code)
+
+    def _on_allow_discovery_toggled(self, checked: bool) -> None:
+        QSettings("LocalShare", "LocalShare").setValue("allow_device_discovery", checked)
+        if checked:
+            self.discovery_service.start()
+        else:
+            self.discovery_service.stop()
+
+    def _confirm_regenerate_device_code(self) -> None:
+        result = QMessageBox.question(
+            self,
+            "Regenerate Device Code?",
+            "This will create a new identity for this LocalShare installation.\n\n"
+            "Previously recognized devices may need to discover this device again.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if result != QMessageBox.StandardButton.Yes:
+            return
+        new_code = regenerate_device_code()
+        self.discovery_service.device_code = new_code
+        self.device_code_display.setText(new_code)
 
     def _check_for_updates(self) -> None:
         address = self.update_source_input.text().strip()

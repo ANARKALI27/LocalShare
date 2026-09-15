@@ -188,6 +188,25 @@ on the same network — Android, iPhone, another PC, doesn't matter.
 There's no separate mobile app; open the address shown in LocalShare
 from the phone's browser.
 
+## Nearby Devices
+
+Click "Nearby Devices" to see other LocalShare installations on your
+local network and open one directly in your browser — no need to ask
+someone for their address. Works via LAN broadcast (UDP, port 53317),
+with no central server involved; discovery only sees devices on the
+same local network, not the internet.
+
+Every installation has a persistent device code (e.g. `LS-7K4P-92MX`),
+visible and editable (along with the device's display name) in
+Settings → Device. The code is generated once via a cryptographically
+secure random source, stays the same across restarts and network
+changes, and never encodes anything about your hardware, IP address,
+or identity — it's pure random data. Discovery can be turned off
+entirely from that same Settings page.
+
+A device only appears here while it's actively sharing something
+(Start Sharing) — there's otherwise nothing to open at its address.
+
 ## Project structure
 
 ```

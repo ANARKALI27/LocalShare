@@ -13,6 +13,48 @@ git checkout v3.0.0   # current
 
 ## Unreleased
 
+**Nearby Devices — see and open other LocalShare installations on your
+network.** New "Nearby Devices" button opens a dialog listing other
+LocalShare instances discovered via LAN broadcast (no central server
+involved), each shown as a card with name, persistent device code,
+IP:port, and online/offline status. Click a card (or its "Open"
+action) to launch that device's address in your default browser.
+Secondary actions per device: copy address, copy device code, test
+connection (verifies the actual server responds, not just that a
+discovery packet arrived), and a details view.
+
+Every LocalShare installation now has a persistent, cryptographically
+random device code (LS-XXXX-XXXX format, via Python's `secrets`
+module) that survives restarts, IP changes, and switching networks —
+configurable in Settings → Device, along with an editable device name
+and a "Regenerate Device Code" option (behind a confirmation, since it
+means other devices will need to re-discover this one). Discovery can
+be turned off entirely from the same page if the automatic LAN
+broadcast isn't wanted.
+
+This revives and substantially rewrites discovery code that already
+existed in the project from an earlier phase but had become
+disconnected from the UI — including fixing a real bug in that
+original code: it generated a brand-new random device ID on every
+single launch, which defeated the entire point of a "persistent"
+identity. Implemented as a dialog opened from a button (matching how
+Settings already works) rather than a sidebar page, since this app's
+sidebar navigation was deliberately removed in an earlier revision —
+reintroducing it for one feature would contradict that decision and
+change the app's established visual style.
+
+Verified with real, not mocked, testing throughout: two genuinely
+separate OS processes, each announcing a different device identity,
+discovered each other for real over actual UDP broadcast — directly
+exercising the same scenario as manually testing with two physical
+PCs. The connection tester was verified against real HTTP servers
+including actual timeout behavior on an unroutable address. The full
+GUI — MainWindow construction, the Nearby Devices dialog, and the new
+Settings page — was constructed and exercised in a real (headless)
+Qt environment, including the device name/regenerate/discovery-toggle
+flows actually updating the live running service, not just verified
+by inspection the way most of this project's GUI code has had to be.
+
 **Internet sharing switched back to Cloudflare Quick Tunnel, final
 this time.** After discovering ngrok's free tier caps at 1GB of
 bandwidth per month — meaning a single ~140MB file upload used 14% of
