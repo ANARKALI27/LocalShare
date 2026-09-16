@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 from app.gui.hover_button import HoverGlowButton
 from app.network import global_registry
 from app.network.connection_tester import test_connection
+from app.network.recent_devices import add_recent_device, get_recent_devices, remove_recent_device
 
 AUTO_REFRESH_INTERVAL_MS = 6000  # within the spec's suggested 5-10s range
 
@@ -331,7 +332,9 @@ class NearbyDevicesDialog(QDialog):
 
         code_row = QHBoxLayout()
         self.code_input = QLineEdit()
+        self.code_input.setText("LS-")
         self.code_input.setPlaceholderText("Enter Device Code (LS-XXXX-XXXX)")
+        self.code_input.textChanged.connect(self._on_code_input_changed)
         self.code_input.setStyleSheet(
             f"""
             QLineEdit {{
@@ -361,6 +364,27 @@ class NearbyDevicesDialog(QDialog):
         self.connect_status_label.setWordWrap(True)
         self.connect_status_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
         root.addWidget(self.connect_status_label)
+
+        # Recent Devices — only visible once there's at least one, so
+        # it doesn't clutter the dialog with an empty section on first
+        # use. Reconnecting here always re-runs the normal lookup with
+        # that device's code (see _reconnect_to_recent) rather than
+        # reusing a cached address, since a device's actual address can
+        # genuinely change between visits.
+        self.recent_label = QLabel("RECENT DEVICES")
+        self.recent_label.setStyleSheet(
+            f"color: {theme_colors['text_dim']}; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+        )
+        self.recent_label.hide()
+        root.addWidget(self.recent_label)
+
+        self.recent_container = QWidget()
+        self.recent_layout = QVBoxLayout(self.recent_container)
+        self.recent_layout.setContentsMargins(0, 0, 0, 0)
+        self.recent_layout.setSpacing(4)
+        self.recent_container.hide()
+        root.addWidget(self.recent_container)
+        self._recent_row_widgets: list[QWidget] = []
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -403,6 +427,7 @@ class NearbyDevicesDialog(QDialog):
         self._auto_refresh_timer.timeout.connect(self.refresh)
         self._auto_refresh_timer.start(AUTO_REFRESH_INTERVAL_MS)
 
+        self._refresh_recent_devices()
         self.refresh()
 
     def refresh(self) -> None:
@@ -459,6 +484,83 @@ class NearbyDevicesDialog(QDialog):
             self.cards_layout.insertWidget(self.cards_layout.count() - 1, card)
             self._cards.append(card)
 
+    def _on_code_input_changed(self, text: str) -> None:
+        """
+        Auto-uppercases as the user types, since device codes are
+        always uppercase and typing them in lowercase would otherwise
+        just fail to match with no obvious reason why. Blocks signals
+        while rewriting the text to avoid re-triggering this same
+        handler recursively, and restores the cursor position
+        afterward so retyping the (now-uppercased) text doesn't jump
+        the cursor to an unexpected spot mid-typing.
+        """
+        upper = text.upper()
+        if upper == text:
+            return
+        cursor_pos = self.code_input.cursorPosition()
+        self.code_input.blockSignals(True)
+        self.code_input.setText(upper)
+        self.code_input.setCursorPosition(cursor_pos)
+        self.code_input.blockSignals(False)
+
+    def _refresh_recent_devices(self) -> None:
+        for widget in self._recent_row_widgets:
+            widget.setParent(None)
+            widget.deleteLater()
+        self._recent_row_widgets = []
+
+        devices = get_recent_devices()
+        self.recent_label.setVisible(len(devices) > 0)
+        self.recent_container.setVisible(len(devices) > 0)
+
+        for device in devices:
+            row = self._build_recent_row(device["device_code"], device["name"])
+            self.recent_layout.addWidget(row)
+            self._recent_row_widgets.append(row)
+
+    def _build_recent_row(self, device_code: str, name: str) -> QWidget:
+        row = QFrame()
+        row.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {_hex_to_rgba(self.theme_colors['surface'], 0.5)};
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            """
+        )
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 8, 10, 8)
+
+        label = QLabel(f"{name}  ·  {device_code}")
+        label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 12px; border: none;")
+        layout.addWidget(label, stretch=1)
+
+        connect_btn = QPushButton("Connect")
+        connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        connect_btn.clicked.connect(lambda: self._reconnect_to_recent(device_code))
+        layout.addWidget(connect_btn)
+
+        remove_btn = QPushButton("✕")
+        remove_btn.setFixedWidth(28)
+        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.clicked.connect(lambda: self._remove_recent(device_code))
+        layout.addWidget(remove_btn)
+
+        return row
+
+    def _reconnect_to_recent(self, device_code: str) -> None:
+        # Always re-runs the normal lookup rather than reusing a
+        # cached address — see the Recent Devices section comment in
+        # __init__ for why (an address can genuinely change between
+        # visits, LAN IP or Global tunnel URL alike).
+        self.code_input.setText(device_code)
+        self._connect_by_code()
+
+    def _remove_recent(self, device_code: str) -> None:
+        remove_recent_device(device_code)
+        self._refresh_recent_devices()
+
     def _connect_by_code(self) -> None:
         code = self.code_input.text().strip().upper()
         if not code:
@@ -474,6 +576,8 @@ class NearbyDevicesDialog(QDialog):
             if match:
                 url = f"http://{match['ip']}:{match['port']}"
                 self.connect_status_label.setText(f"✓ Found on your local network — opening {url}")
+                add_recent_device(code, match["name"])
+                self._refresh_recent_devices()
                 QDesktopServices.openUrl(QUrl(url))
                 return
 
@@ -508,6 +612,8 @@ class NearbyDevicesDialog(QDialog):
             return
 
         self.connect_status_label.setText(f"✓ Found {result['device_name']} — connecting…")
+        add_recent_device(device_code, result["device_name"])
+        self._refresh_recent_devices()
         QDesktopServices.openUrl(QUrl(result["tunnel_url"]))
 
     def closeEvent(self, event) -> None:
