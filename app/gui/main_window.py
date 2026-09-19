@@ -68,7 +68,7 @@ from app.gui.theme import (
     theme_to_json,
     theme_from_json,
 )
-from app.paths import ICON_PATH
+from app.paths import DONATE_QR_PATH, ICON_PATH
 from app.gui.update_checker import (
     check_for_update,
     download_build,
@@ -90,6 +90,11 @@ from app.server.tunnel import TunnelHandle
 from app.server.webdav_server import WebDavHandle
 from app.state import ShareManager, SharedItem
 from app.version import APP_VERSION
+
+# Developer contact/support details — used by the About page's "Thank
+# the Developer" dialog and the first-launch appreciation prompt.
+DEVELOPER_UPI_ID = "anarkali-0@axl"
+DEVELOPER_EMAIL = "bhargavpatil725@gmail.com"
 
 
 class _ServerStartWorker(QThread):
@@ -317,6 +322,9 @@ class MainWindow(QMainWindow):
         # Slight delay so this doesn't compete with the splash screen /
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
+
+        if not QSettings("LocalShare", "LocalShare").value("has_shown_appreciation_prompt", False, type=bool):
+            QTimer.singleShot(1500, self._show_appreciation_prompt)
 
         # Video backgrounds use hardware-accelerated decoding on
         # Windows, which is capable of leaking memory in ways this app
@@ -2368,6 +2376,10 @@ class MainWindow(QMainWindow):
         about_text.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         self._about_label = about_text  # kept for theme refresh
         layout.addWidget(about_text)
+
+        thank_dev_btn = HoverGlowButton("❤️ Thank the Developer", glow_color=self.theme_colors["accent"])
+        thank_dev_btn.clicked.connect(self._open_thank_developer_dialog)
+        layout.addWidget(thank_dev_btn)
         layout.addStretch()
 
         nav_list.currentRowChanged.connect(pages_stack.setCurrentIndex)
@@ -2393,6 +2405,100 @@ class MainWindow(QMainWindow):
 
     def _open_nearby_devices_dialog(self) -> None:
         dialog = NearbyDevicesDialog(self.discovery_service, self.theme_colors, parent=self)
+        dialog.exec()
+
+    def _show_appreciation_prompt(self) -> None:
+        """
+        Shown once, automatically, the first time LocalShare runs.
+        Purely optional and dismissible with a single click — never
+        blocks or nags; the same option is always reachable afterward
+        via About → Thank the Developer for anyone who wants it later.
+        """
+        QSettings("LocalShare", "LocalShare").setValue("has_shown_appreciation_prompt", True)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("LocalShare")
+        dialog.setMinimumWidth(380)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+
+        message = QLabel(
+            "If you like LocalShare, you can appreciate it through UPI from the About "
+            "section in Settings."
+        )
+        message.setWordWrap(True)
+        message.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 13px;")
+        layout.addWidget(message)
+
+        button_row = QHBoxLayout()
+        continue_btn = HoverGlowButton("Continue Using Software", glow_color=self.theme_colors["accent"])
+        continue_btn.clicked.connect(dialog.accept)
+        button_row.addWidget(continue_btn)
+        appreciate_btn = HoverGlowButton("Appreciate Now", glow_color=self.theme_colors["accent"])
+        appreciate_btn.clicked.connect(lambda: (dialog.accept(), self._open_thank_developer_dialog()))
+        button_row.addWidget(appreciate_btn)
+        layout.addLayout(button_row)
+
+        dialog.exec()
+
+    def _open_thank_developer_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Thank the Developer")
+        dialog.setMinimumWidth(360)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(14)
+
+        heading = QLabel("If LocalShare has been useful to you \u2764\ufe0f")
+        heading.setWordWrap(True)
+        heading.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "This is entirely optional — LocalShare is free either way. If you'd like to "
+            "support its development, you can do so via UPI:"
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(intro)
+
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qr_pixmap = QPixmap(DONATE_QR_PATH)
+        if not qr_pixmap.isNull():
+            qr_label.setPixmap(
+                qr_pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            )
+        layout.addWidget(qr_label)
+
+        upi_row = QHBoxLayout()
+        upi_value = QLabel(DEVELOPER_UPI_ID)
+        upi_value.setStyleSheet(
+            f"color: {self.theme_colors['accent']}; font-size: 14px; font-weight: 600; "
+            f"font-family: monospace; background-color: {self.theme_colors['surface']}; "
+            "padding: 8px 12px; border-radius: 6px;"
+        )
+        upi_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        upi_row.addWidget(upi_value, stretch=1)
+        copy_upi_btn = HoverGlowButton("Copy UPI ID", glow_color=self.theme_colors["accent"])
+        copy_upi_btn.clicked.connect(lambda: QApplication.clipboard().setText(DEVELOPER_UPI_ID))
+        upi_row.addWidget(copy_upi_btn)
+        layout.addLayout(upi_row)
+
+        feedback_note = QLabel(
+            f"Found a bug, or have a message or new feature idea? Reach out any time at "
+            f"{DEVELOPER_EMAIL}"
+        )
+        feedback_note.setWordWrap(True)
+        feedback_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(feedback_note)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        done_btn = HoverGlowButton("Done", glow_color=self.theme_colors["accent"])
+        done_btn.clicked.connect(dialog.accept)
+        button_row.addWidget(done_btn)
+        layout.addLayout(button_row)
+
         dialog.exec()
 
     def _save_device_name(self) -> None:

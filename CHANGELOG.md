@@ -13,6 +13,15 @@ git checkout v3.0.0   # current
 
 ## Unreleased
 
+**Appreciation / support option.** A one-time, dismissible prompt on
+first launch mentions that LocalShare can be appreciated via UPI from
+Settings → About — never nags, never blocks anything, shown exactly
+once. About page now has a "❤️ Thank the Developer" button (reachable
+anytime afterward) showing a UPI QR code and ID for anyone who wants
+to support the project, plus a note with an email address for bugs,
+messages, or feature ideas. Entirely optional in every sense — the
+app is fully functional with this ignored or dismissed immediately.
+
 **Global Device ID Connect — connect to a device anywhere by its
 Device ID, not just on the same LAN.** Extends Nearby Devices: enter a
 Device ID in "Connect by Device ID" and LocalShare tries your local
