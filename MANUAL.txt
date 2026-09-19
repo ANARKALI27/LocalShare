@@ -3,12 +3,13 @@ LocalShare - Simple Manual (English)
 ==================================================
 
 This file explains, in plain simple language, how to install
-LocalShare, how to use it, and how to share over the Internet using
-Cloudflare.
+LocalShare, how to use it, how to share over the Internet, how to
+find and connect to other LocalShare devices, and everything else
+that's been added since the last version of this manual.
 
 IMPORTANT: This app used to use ngrok, but now it uses ONLY
-CLOUDFLARE - so no account or sign up is needed at all. Only the
-Cloudflare method is explained below.
+CLOUDFLARE for internet sharing - so no account or sign up is needed
+for that part at all. Only the Cloudflare method is explained below.
 
 --------------------------------------------------
 1. HOW TO INSTALL ON WINDOWS
@@ -67,8 +68,11 @@ To uninstall:
 5. Send that address (or the QR code) to whoever you're sharing
    with.
 6. They can open that link in any web browser - view files, download
-   them, and (if it's a folder) upload their own files back too.
-7. When you're done, click "Stop Sharing."
+   them, and (if it's a folder) upload their own files back too, or
+   drag a file directly onto the page.
+7. Want to chat? There's a Messages option too - works from either
+   side, supports photos and videos.
+8. When you're done, click "Stop Sharing."
 
 --------------------------------------------------
 4. SHARING OVER THE INTERNET (CLOUDFLARE, "GLOBAL" MODE)
@@ -128,7 +132,96 @@ Things worth knowing about Cloudflare:
   files with friends.
 
 --------------------------------------------------
-5. BUILDING IT YOURSELF (ONLY IF BUILDING FROM SOURCE CODE)
+5. YOUR DEVICE ID (NEW)
+--------------------------------------------------
+
+Every LocalShare install now has its own permanent Device ID, like:
+
+    LS-7K4P-92MX
+
+This ID:
+  - Is created automatically the first time you open the app
+  - Stays exactly the same every time you restart LocalShare
+  - Stays the same even if your Wi-Fi/IP address changes, or you
+    switch from Wi-Fi to Ethernet
+  - Is random and private - it does NOT contain your IP address,
+    computer name, or any personal information
+
+Where to find it: Settings > Device. You can also:
+  - Change your Device NAME there (the ID itself never changes when
+    you do this)
+  - Copy your Device ID with one click
+  - Regenerate your Device ID if you ever want a fresh one (this
+    needs confirmation, since other devices would need to find you
+    again afterward)
+
+--------------------------------------------------
+6. NEARBY DEVICES (NEW)
+--------------------------------------------------
+
+Click the "Nearby Devices" button to see other LocalShare installs
+that are currently sharing on your same Wi-Fi/Ethernet network -
+found automatically, no setup needed.
+
+  - Each device shows its name, Device ID, and address
+  - Click a device (or its "Open" button) to open its address
+    directly in your browser - no need to ask them for the link
+  - A device only shows up here while it's actively "Start Sharing" -
+    if you don't see a device you expect, check that the other
+    person has clicked Start Sharing on their end too
+  - The list refreshes automatically every few seconds, or click
+    Refresh to check right away
+
+Connect by Device ID: instead of browsing the list, you can type a
+Device ID directly (like LS-7K4P-92MX) into the box and click
+Connect - LocalShare checks your local network first, instantly.
+
+Recent Devices: once you've successfully connected to a device, it's
+saved here for quick one-click reconnecting next time - no need to
+retype the Device ID again. You can remove any entry you don't want
+to keep.
+
+--------------------------------------------------
+7. CONNECTING TO A DEVICE ANYWHERE (GLOBAL DEVICE ID CONNECT) (NEW)
+--------------------------------------------------
+
+Normally, "Connect by Device ID" only finds devices on your own Wi-Fi.
+With one extra (optional, free) setup step, it can also find and
+connect to a LocalShare device anywhere else in the world, using
+nothing but its Device ID - no address, no port, nothing else to ask
+for.
+
+This needs a one-time setup on a free Firebase account (Google's, not
+LocalShare's) - full step-by-step instructions are in the separate
+GLOBAL_CONNECT_SETUP.md file that comes with this project. Once set
+up, paste the resulting database link into Settings > Device >
+Connect Globally, and that's it - permanently done, nothing to repeat.
+
+How it actually works, in short: it reuses the same Cloudflare
+internet sharing described in section 4 above - there's no separate
+server relaying your files. The one-time setup just lets LocalShare
+look up "where is this Device ID right now" so you don't have to be
+told the address by hand.
+
+If you don't set this up: LocalShare still works exactly the same for
+everything else - Connect by Device ID just stays local-network-only,
+which is what most people need most of the time anyway.
+
+--------------------------------------------------
+8. SUPPORTING THE DEVELOPER (NEW)
+--------------------------------------------------
+
+LocalShare is free either way - this is entirely optional. If you'd
+like to support its development, go to Settings > About and click
+"Thank the Developer" - you'll see a UPI QR code and ID you can pay
+to if you want.
+
+That same screen also has an email address for reporting bugs,
+sending a message, or suggesting a new feature - always welcome,
+whether or not you use the support option.
+
+--------------------------------------------------
+9. BUILDING IT YOURSELF (ONLY IF BUILDING FROM SOURCE CODE)
 --------------------------------------------------
 
 Windows:
@@ -139,6 +232,17 @@ Linux (.deb):
   ./build_deb.sh
   (this creates a .deb file that can be installed the way described
   above)
+
+Important if you're on Windows using WSL (Linux inside Windows): run
+these commands from your Linux home folder (like ~/localshare), NOT
+from a Windows drive path (like /mnt/c/... or /mnt/b/...). Windows
+drives don't support the file permissions the .deb build step needs,
+and the build will fail with a permissions error. Copy the project
+into your Linux home folder first:
+
+  cp -r /mnt/c/path/to/localshare ~/localshare
+  cd ~/localshare
+  ./build_deb.sh
 
 --------------------------------------------------
 
