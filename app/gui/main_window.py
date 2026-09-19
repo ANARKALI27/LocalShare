@@ -2462,29 +2462,6 @@ class MainWindow(QMainWindow):
         intro.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         layout.addWidget(intro)
 
-        # Glass panel wrapping the QR code + UPI details — same
-        # technique as the Nearby Devices dialog's cards: a translucent
-        # background blended against this dialog's own solid content
-        # area, a subtle light border, and a soft ambient shadow. Not
-        # real backdrop transparency (see nearby_devices_dialog.py's
-        # module docstring for why that's deliberately avoided), just
-        # applied here too instead of the plain flat panel this dialog
-        # had before.
-        glass_panel = QFrame()
-        glass_panel.setStyleSheet(
-            f"""
-            QFrame {{
-                background-color: {_hex_to_rgba(self.theme_colors['surface'], 0.88)};
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.14);
-            }}
-            """
-        )
-        _apply_glass_shadow(glass_panel, blur=28, alpha=120)
-        panel_layout = QVBoxLayout(glass_panel)
-        panel_layout.setContentsMargins(18, 18, 18, 18)
-        panel_layout.setSpacing(12)
-
         qr_label = QLabel()
         qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_pixmap = QPixmap(DONATE_QR_PATH)
@@ -2492,33 +2469,20 @@ class MainWindow(QMainWindow):
             qr_label.setPixmap(
                 qr_pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
-        panel_layout.addWidget(qr_label)
+        layout.addWidget(qr_label)
 
         upi_row = QHBoxLayout()
         upi_value = QLabel(DEVELOPER_UPI_ID)
         upi_value.setStyleSheet(
-            f"color: {self.theme_colors['accent']}; font-size: 14px; font-weight: 600; "
-            f"font-family: monospace; background-color: {_hex_to_rgba(self.theme_colors['bg'], 0.6)}; "
-            "padding: 8px 12px; border-radius: 6px; border: none;"
+            f"color: {self.theme_colors['accent']}; font-size: 14px; font-weight: 600; font-family: monospace;"
         )
         upi_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         upi_row.addWidget(upi_value, stretch=1)
-        # Deliberately a plain QPushButton, not HoverGlowButton — see
-        # nearby_devices_dialog.py's menu_btn comment for the full
-        # explanation: HoverGlowButton animates its hover state via its
-        # own QGraphicsDropShadowEffect, and nesting a widget with its
-        # own graphics effect inside a parent that also has one (this
-        # glass_panel's shadow, applied above) renders the child
-        # completely invisible — confirmed by this exact button
-        # disappearing when it was a HoverGlowButton here, same as the
-        # Nearby Devices dialog's menu button did before that same fix.
         copy_upi_btn = QPushButton("Copy UPI ID")
         copy_upi_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_upi_btn.clicked.connect(lambda: QApplication.clipboard().setText(DEVELOPER_UPI_ID))
         upi_row.addWidget(copy_upi_btn)
-        panel_layout.addLayout(upi_row)
-
-        layout.addWidget(glass_panel)
+        layout.addLayout(upi_row)
 
         feedback_note = QLabel(
             f"Found a bug, or have a message or new feature idea? Reach out any time at "
