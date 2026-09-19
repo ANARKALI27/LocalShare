@@ -54,7 +54,7 @@ from app.gui.gradient_background import AnimatedGradientBackground, STYLES
 from app.gui.memory_watch import get_process_memory_mb
 from app.gui.custom_theme_dialog import CustomThemeDialog
 from app.gui.hover_button import HoverGlowButton
-from app.gui.nearby_devices_dialog import NearbyDevicesDialog
+from app.gui.nearby_devices_dialog import NearbyDevicesDialog, _apply_glass_shadow, _hex_to_rgba
 import app.gui.hover_button as hover_button_module
 from app.gui.qr_widget import generate_qr_pixmap
 from app.gui.theme import (
@@ -250,7 +250,7 @@ class MainWindow(QMainWindow):
         self._card_shadow = _persisted.value("card_shadow", "None")
         if self._card_shadow not in CARD_SHADOW_BLUR:
             self._card_shadow = "None"
-        self._surface_alpha = float(_persisted.value("surface_alpha", 1.0))
+        self._surface_alpha = float(_persisted.value("surface_alpha", 0.85))
         self._local_pin_preference: bool = False  # your own PIN choice for Local mode, remembered separately from Global's forced-on state
         self.theme_colors = self._compute_theme_colors()
         # Applied at the QApplication level, not just this window — a
@@ -588,7 +588,7 @@ class MainWindow(QMainWindow):
         )
 
         # -- glass effect: experimental, see _refresh_glass_backdrop() --
-        _persisted_glass_effect = QSettings("LocalShare", "LocalShare").value("glass_effect", "Off")
+        _persisted_glass_effect = QSettings("LocalShare", "LocalShare").value("glass_effect", "Subtle")
         if _persisted_glass_effect not in ("Off", "Subtle", "Medium", "Strong"):
             _persisted_glass_effect = "Off"
         self.glass_effect_combo = QComboBox()
@@ -1734,15 +1734,15 @@ class MainWindow(QMainWindow):
         self._card_radius = "Medium"
         self._card_border = "Subtle"
         self._card_shadow = "None"
-        self._surface_alpha = 1.0
-        self._glass_effect = "Off"
+        self._surface_alpha = 0.85
+        self._glass_effect = "Subtle"
         self._bg_image_path = None
         self._bg_video_path = None
 
         for key, value in [
             ("theme_name", "Default Dark"), ("custom_accent", ""),
             ("card_radius", "Medium"), ("card_border", "Subtle"), ("card_shadow", "None"),
-            ("surface_alpha", 1.0), ("glass_effect", "Off"),
+            ("surface_alpha", 0.85), ("glass_effect", "Subtle"),
             ("background_mode", "solid"), ("particle_overlay", "None"), ("gradient_style", STYLES[0]),
             ("image_path", ""), ("video_path", ""),
             ("image_position", "Center"), ("image_scaling", "Fill"),
@@ -1759,7 +1759,7 @@ class MainWindow(QMainWindow):
         self.card_radius_combo.setCurrentText("Medium")
         self.card_border_combo.setCurrentText("Subtle")
         self.card_shadow_combo.setCurrentText("None")
-        self.glass_effect_combo.setCurrentText("Off")
+        self.glass_effect_combo.setCurrentText("Subtle")
         self.gradient_style_combo.setCurrentText(STYLES[0])
         self.particle_overlay_combo.setCurrentText("None")
         self.image_position_combo.setCurrentText("Center")
@@ -2445,6 +2445,7 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Thank the Developer")
         dialog.setMinimumWidth(360)
+        dialog.setStyleSheet(f"QDialog {{ background-color: {self.theme_colors['bg']}; }}")
         layout = QVBoxLayout(dialog)
         layout.setSpacing(14)
 
@@ -2461,6 +2462,29 @@ class MainWindow(QMainWindow):
         intro.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
         layout.addWidget(intro)
 
+        # Glass panel wrapping the QR code + UPI details — same
+        # technique as the Nearby Devices dialog's cards: a translucent
+        # background blended against this dialog's own solid content
+        # area, a subtle light border, and a soft ambient shadow. Not
+        # real backdrop transparency (see nearby_devices_dialog.py's
+        # module docstring for why that's deliberately avoided), just
+        # applied here too instead of the plain flat panel this dialog
+        # had before.
+        glass_panel = QFrame()
+        glass_panel.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {_hex_to_rgba(self.theme_colors['surface'], 0.88)};
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+            }}
+            """
+        )
+        _apply_glass_shadow(glass_panel, blur=28, alpha=120)
+        panel_layout = QVBoxLayout(glass_panel)
+        panel_layout.setContentsMargins(18, 18, 18, 18)
+        panel_layout.setSpacing(12)
+
         qr_label = QLabel()
         qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qr_pixmap = QPixmap(DONATE_QR_PATH)
@@ -2468,21 +2492,33 @@ class MainWindow(QMainWindow):
             qr_label.setPixmap(
                 qr_pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
-        layout.addWidget(qr_label)
+        panel_layout.addWidget(qr_label)
 
         upi_row = QHBoxLayout()
         upi_value = QLabel(DEVELOPER_UPI_ID)
         upi_value.setStyleSheet(
             f"color: {self.theme_colors['accent']}; font-size: 14px; font-weight: 600; "
-            f"font-family: monospace; background-color: {self.theme_colors['surface']}; "
-            "padding: 8px 12px; border-radius: 6px;"
+            f"font-family: monospace; background-color: {_hex_to_rgba(self.theme_colors['bg'], 0.6)}; "
+            "padding: 8px 12px; border-radius: 6px; border: none;"
         )
         upi_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         upi_row.addWidget(upi_value, stretch=1)
-        copy_upi_btn = HoverGlowButton("Copy UPI ID", glow_color=self.theme_colors["accent"])
+        # Deliberately a plain QPushButton, not HoverGlowButton — see
+        # nearby_devices_dialog.py's menu_btn comment for the full
+        # explanation: HoverGlowButton animates its hover state via its
+        # own QGraphicsDropShadowEffect, and nesting a widget with its
+        # own graphics effect inside a parent that also has one (this
+        # glass_panel's shadow, applied above) renders the child
+        # completely invisible — confirmed by this exact button
+        # disappearing when it was a HoverGlowButton here, same as the
+        # Nearby Devices dialog's menu button did before that same fix.
+        copy_upi_btn = QPushButton("Copy UPI ID")
+        copy_upi_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_upi_btn.clicked.connect(lambda: QApplication.clipboard().setText(DEVELOPER_UPI_ID))
         upi_row.addWidget(copy_upi_btn)
-        layout.addLayout(upi_row)
+        panel_layout.addLayout(upi_row)
+
+        layout.addWidget(glass_panel)
 
         feedback_note = QLabel(
             f"Found a bug, or have a message or new feature idea? Reach out any time at "
