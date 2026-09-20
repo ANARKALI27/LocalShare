@@ -7,8 +7,7 @@ LocalShare, how to use it, how to share over the Internet, how to
 find and connect to other LocalShare devices, and everything else
 that's been added since the last version of this manual.
 
-IMPORTANT: This app used to use ngrok, but now it uses ONLY
-CLOUDFLARE for internet sharing - so no account or sign up is needed
+IMPORTANT: This app uses ONLY CLOUDFLARE for internet sharing - so no account or sign up is needed
 for that part at all. Only the Cloudflare method is explained below.
 
 --------------------------------------------------
