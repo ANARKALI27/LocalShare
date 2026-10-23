@@ -101,11 +101,19 @@ def create_zip_archive(source_dir: str) -> str:
     os.close(fd)
 
     base_name = os.path.basename(source_dir.rstrip(os.sep))
+    source_real = os.path.realpath(source_dir)
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _dirs, files in os.walk(source_dir):
             for filename in files:
                 full_path = os.path.join(root, filename)
+                # A symlink inside a shared folder could point at a file
+                # elsewhere on the disk (e.g. ~/.ssh/id_rsa). zipfile
+                # would follow it and silently include that file, so
+                # anything that resolves outside the shared folder is skipped.
+                real = os.path.realpath(full_path)
+                if real != source_real and not real.startswith(source_real + os.sep):
+                    continue
                 # arcname keeps the top folder name so extracting the
                 # zip recreates "FolderName/..." rather than dumping
                 # contents loose — matches what people expect.

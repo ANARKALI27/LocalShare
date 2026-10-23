@@ -26,6 +26,22 @@ from app.transfer.range_tracking import Range, is_fully_covered, merge_range, to
 from app.transfer.upload import resolve_upload_path, unique_destination
 
 
+MAX_ACTIVE_SESSIONS = 64
+SESSION_IDLE_SECONDS = 24 * 3600
+FINALIZED_KEEP_SECONDS = 600  # finished sessions are forgotten after 10 minutes
+# Keep this much free disk in the temp location beyond the upload itself,
+# so one upload request can't fill the drive completely.
+DISK_RESERVE_BYTES = 256 * 1024 * 1024
+
+
+class ResumableLimitError(Exception):
+    """A new upload session was refused (too many sessions / not enough disk)."""
+
+    def __init__(self, message: str, status_code: int = 429) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass
 class UploadSession:
     id: str
@@ -35,6 +51,7 @@ class UploadSession:
     total_size: int
     temp_path: str
     created_at: float = field(default_factory=time.time)
+    last_activity: float = field(default_factory=time.time)
     bytes_received: int = 0
     covered_ranges: list[Range] = field(default_factory=list)
     finalized: bool = False
@@ -51,6 +68,23 @@ class ResumableUploadManager:
     ) -> UploadSession:
         if total_size < 0:
             raise ValueError("total_size must not be negative")
+
+        self._expire_idle_sessions()
+        with self._lock:
+            # Only sessions still receiving data count — a finished
+            # upload keeps its record briefly (so /status can report
+            # "finalized") but must not use up the limit, or uploading a
+            # folder of many large files would start failing after the
+            # 64th file.
+            active = sum(1 for sess in self._sessions.values() if not sess.finalized)
+            if active >= MAX_ACTIVE_SESSIONS:
+                raise ResumableLimitError("Too many uploads in progress — try again shortly", 429)
+        try:
+            free = shutil.disk_usage(self._temp_dir).free
+        except OSError:
+            free = None
+        if free is not None and total_size > max(free - DISK_RESERVE_BYTES, 0):
+            raise ResumableLimitError("Not enough free disk space for this upload", 507)
 
         session_id = uuid.uuid4().hex
         temp_path = os.path.join(self._temp_dir, session_id + ".part")
@@ -114,6 +148,7 @@ class ResumableUploadManager:
             with open(session.temp_path, "r+b") as f:
                 f.seek(offset)
                 f.write(data)
+            session.last_activity = time.time()
             session.covered_ranges = merge_range(session.covered_ranges, (offset, offset + len(data)))
             session.bytes_received = total_covered(session.covered_ranges)
         return session
@@ -145,7 +180,21 @@ class ResumableUploadManager:
 
         with self._lock:
             session.finalized = True
+            session.last_activity = time.time()
         return final_path
+
+    def _expire_idle_sessions(self) -> None:
+        """Drop abandoned sessions (and their temp files) so they can't pile up forever."""
+        now = time.time()
+        cutoff = now - SESSION_IDLE_SECONDS
+        with self._lock:
+            stale = [
+                sid for sid, s in self._sessions.items()
+                if s.last_activity < cutoff
+                or (s.finalized and now - s.last_activity > FINALIZED_KEEP_SECONDS)
+            ]
+        for sid in stale:
+            self.cancel(sid)
 
     def cancel(self, session_id: str) -> None:
         session = self.get(session_id)

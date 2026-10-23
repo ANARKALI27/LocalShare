@@ -123,6 +123,26 @@ class LatestBuildResult:
         self.download_url = download_url
 
 
+_ALLOWED_INSTALLER_EXTENSIONS = (".exe", ".deb")
+
+
+def is_safe_installer_reference(name: object, download_url: object) -> bool:
+    """
+    The other device tells us the installer's name and download path, so
+    both are untrusted. Accept only a plain file name ending in
+    .exe/.deb (no folders, no ".."), and only the app's own
+    "/download?..." path on that same device — never a full URL, which
+    could point the download (and then the launch) at somewhere else.
+    """
+    if not isinstance(name, str) or not isinstance(download_url, str):
+        return False
+    if not name or name != os.path.basename(name.replace("\\", "/")) or ".." in name:
+        return False
+    if any(ord(ch) < 32 for ch in name) or not name.lower().endswith(_ALLOWED_INSTALLER_EXTENSIONS):
+        return False
+    return download_url.startswith("/download?") and "@" not in download_url.split("?", 1)[0]
+
+
 def find_latest_build(address: str, timeout: float = 5.0) -> LatestBuildResult:
     """
     Asks the other instance whether it's sharing something that looks
@@ -145,6 +165,9 @@ def find_latest_build(address: str, timeout: float = 5.0) -> LatestBuildResult:
     if not data.get("available"):
         return LatestBuildResult(available=False)
 
+    if not is_safe_installer_reference(data.get("name"), data.get("download_url")):
+        return LatestBuildResult(available=False)
+
     return LatestBuildResult(
         available=True, name=data.get("name"), download_url=data.get("download_url")
     )
@@ -157,6 +180,8 @@ def download_build(address: str, download_url: str, filename: str, timeout: floa
     any failure — caller (a background thread) is expected to catch
     this and report it rather than let it propagate raw.
     """
+    if not is_safe_installer_reference(filename, download_url):
+        raise RuntimeError("The other device offered an installer that doesn't look valid — refusing to download it.")
     normalized = normalize_address(address)
     url = f"{normalized}{download_url}"
 

@@ -12,6 +12,7 @@ redirect would be confusing).
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from app.server.auth import AccessControl
 
@@ -28,6 +29,27 @@ EXEMPT_PATHS = {
 EXEMPT_PREFIXES = ("/static/",)
 
 COOKIE_NAME = "ls_auth"
+
+
+def client_key(request: "Request") -> str:
+    """
+    Who is this client, for rate limiting? Normally the socket address.
+    Through the Cloudflare tunnel every request arrives from 127.0.0.1,
+    so for loopback connections only we trust the address cloudflared
+    forwards in CF-Connecting-IP — a remote caller can't set that header
+    on a direct connection to be believed, since direct connections
+    are not loopback.
+    """
+    host = request.client.host if request.client else "unknown"
+    if host in ("127.0.0.1", "::1"):
+        forwarded = request.headers.get("cf-connecting-ip")
+        if forwarded:
+            return forwarded.strip()[:64]
+    return host
+
+
+def is_secure_request(request: "Request") -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
 
 
 def is_exempt(path: str) -> bool:
@@ -71,13 +93,14 @@ def build_auth_middleware_class():
                 # token in every URL.
                 if query_token and cookie_token != self.access_control.token:
                     response.set_cookie(
-                        COOKIE_NAME, self.access_control.token, httponly=True, samesite="lax"
+                        COOKIE_NAME, self.access_control.token, httponly=True, samesite="lax",
+                        secure=is_secure_request(request),
                     )
                 return response
 
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
-                return RedirectResponse(url=f"/login?next={path}")
+                return RedirectResponse(url=f"/login?next={quote(path, safe='/')}")
             return JSONResponse({"detail": "PIN required"}, status_code=401)
 
     return AuthMiddleware

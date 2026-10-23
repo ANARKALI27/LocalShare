@@ -31,6 +31,7 @@ behind the window.
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape as html_escape
 
 from PySide6.QtCore import QSettings, QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
@@ -50,7 +51,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.gui.hover_button import HoverGlowButton
 from app.network import global_registry
 from app.network.connection_tester import test_connection
 from app.network.recent_devices import add_recent_device, get_recent_devices, remove_recent_device
@@ -80,6 +80,76 @@ def _apply_glass_shadow(widget: QWidget, blur: int = 24, alpha: int = 90) -> Non
     shadow.setOffset(0, 4)
     shadow.setColor(QColor(0, 0, 0, alpha))
     widget.setGraphicsEffect(shadow)
+
+
+_T = "255, 255, 255"  # overlay tint: white on dark themes, black on light ones
+
+
+def _set_tint(theme_colors: dict) -> None:
+    """Pick the translucent-overlay colour so borders/hover fills stay
+    visible on both dark and light themes."""
+    global _T
+    h = theme_colors["bg"].lstrip("#")
+    luma = 0.299 * int(h[0:2], 16) + 0.587 * int(h[2:4], 16) + 0.114 * int(h[4:6], 16)
+    _T = "0, 0, 0" if luma > 140 else "255, 255, 255"
+
+
+def _button_qss(theme_colors: dict, primary: bool = False) -> str:
+    """Shared QSS for the plain QPushButtons in this dialog (plain, not
+    HoverGlowButton — see the note in _DeviceCard about nested graphics
+    effects rendering invisibly)."""
+    accent = theme_colors["accent"]
+    if primary:
+        return f"""
+            QPushButton {{
+                background-color: {accent}; color: #FFFFFF; border: none;
+                border-radius: 8px; padding: 8px 18px; font-weight: 600; font-size: 13px;
+            }}
+            QPushButton:hover {{ background-color: {theme_colors.get('accent_hover', accent)}; }}
+            QPushButton:pressed {{ background-color: {_hex_to_rgba(accent, 0.75)}; }}
+        """
+    return f"""
+        QPushButton {{
+            background-color: rgba({_T}, 0.06); color: {theme_colors['text']};
+            border: 1px solid rgba({_T}, 0.12); border-radius: 8px;
+            padding: 7px 14px; font-size: 12px;
+        }}
+        QPushButton:hover {{
+            background-color: rgba({_T}, 0.12);
+            border: 1px solid {_hex_to_rgba(accent, 0.6)};
+        }}
+        QPushButton:pressed {{ background-color: rgba({_T}, 0.04); }}
+    """
+
+
+def _menu_qss(theme_colors: dict) -> str:
+    return f"""
+        QMenu {{
+            background-color: {theme_colors['surface']}; color: {theme_colors['text']};
+            border: 1px solid rgba({_T}, 0.14); border-radius: 10px; padding: 6px;
+        }}
+        QMenu::item {{ padding: 8px 22px 8px 14px; border-radius: 6px; }}
+        QMenu::item:selected {{ background-color: {_hex_to_rgba(theme_colors['accent'], 0.28)}; }}
+        QMenu::separator {{ height: 1px; background: rgba({_T}, 0.10); margin: 4px 8px; }}
+    """
+
+
+class _AutoHideLabel(QLabel):
+    """A QLabel that takes no space while it has no text, so status
+    lines don't leave an empty gap in the layout."""
+
+    def setText(self, text: str) -> None:  # noqa: N802 — Qt naming
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
+def _section_label(text: str, theme_colors: dict) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(
+        f"color: {theme_colors['text_dim']}; font-size: 11px; font-weight: 700; "
+        "letter-spacing: 1.5px; background: transparent;"
+    )
+    return label
 
 
 class _ConnectionTestWorker(QThread):
@@ -132,90 +202,116 @@ class _DeviceCard(QFrame):
         super().__init__(parent)
         self.device_info = device_info
         self.theme_colors = theme_colors
+        _set_tint(theme_colors)
         self._test_worker: _ConnectionTestWorker | None = None
 
         self.setObjectName("DeviceCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 0.55 alpha initially chosen here blended almost invisibly into
-        # the dialog's own background — 'surface' and 'bg' are very
-        # close in tone to begin with, so a mid-transparency blend of
-        # one into the other reads as "barely different shade," not
-        # "glass." Raised alpha significantly (card stays legible and
-        # distinct) and made the border/shadow more pronounced so the
-        # layered-panel look is actually visible, confirmed by
-        # re-rendering and looking at the result directly rather than
-        # guessing at plausible-sounding values again.
-        surface_glass = _hex_to_rgba(theme_colors["surface"], 0.88)
-        surface_glass_hover = _hex_to_rgba(theme_colors["surface"], 0.97)
+        accent = theme_colors["accent"]
         self.setStyleSheet(
             f"""
             QFrame#DeviceCard {{
-                background-color: {surface_glass};
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.92)};
+                border-radius: 14px;
+                border: 1px solid rgba({_T}, 0.12);
             }}
             QFrame#DeviceCard:hover {{
-                background-color: {surface_glass_hover};
-                border: 1px solid {_hex_to_rgba(theme_colors['accent'], 0.6)};
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.99)};
+                border: 1px solid {_hex_to_rgba(accent, 0.7)};
             }}
             """
         )
-        _apply_glass_shadow(self, blur=28, alpha=120)
+        _apply_glass_shadow(self, blur=26, alpha=110)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(4)
-
-        top_row = QHBoxLayout()
         online = device_info["online"]
-        status_dot = "●" if online else "○"
-        status_color = theme_colors["accent"] if online else theme_colors["text_dim"]
+        status_color = "#34D399" if online else theme_colors["text_dim"]
 
-        name_label = QLabel(f"\U0001F4BB {device_info['name']}")
-        name_label.setStyleSheet(f"color: {theme_colors['text']}; font-size: 15px; font-weight: 600;")
-        top_row.addWidget(name_label)
-        top_row.addStretch()
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(16, 14, 14, 14)
+        outer.setSpacing(14)
 
-        self.status_label = QLabel(status_dot)
-        self.status_label.setStyleSheet(f"color: {status_color}; font-size: 15px;")
-        top_row.addWidget(self.status_label)
+        # Avatar: a round badge with the device's initial — gives each
+        # card an identity at a glance instead of a generic emoji.
+        initial = (device_info["name"].strip()[:1] or "?").upper()
+        avatar = QLabel(initial)
+        avatar.setFixedSize(46, 46)
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setStyleSheet(
+            f"background-color: {_hex_to_rgba(accent, 0.22)}; color: {accent}; "
+            f"border: 1px solid {_hex_to_rgba(accent, 0.5)}; border-radius: 23px; "
+            "font-size: 19px; font-weight: 700;"
+        )
+        outer.addWidget(avatar, alignment=Qt.AlignmentFlag.AlignTop)
 
-        # Deliberately a plain QPushButton here, not HoverGlowButton —
-        # HoverGlowButton animates its hover state via its own
-        # QGraphicsDropShadowEffect, and nesting a widget with its own
-        # graphics effect inside this card (which has its own shadow
-        # effect for the glass look, applied below) makes the child
-        # widget render as fully invisible. Confirmed by direct testing:
-        # a plain QPushButton renders correctly in the same position: a
-        # HoverGlowButton does not, regardless of how many extra
-        # wrapper widgets are added in between the two effects. The
-        # card's shadow matters more to the overall look than this one
-        # button's hover-glow animation, so the button loses that
-        # animation rather than the card losing its shadow.
-        menu_btn = QPushButton("⋮")
-        menu_btn.setFixedWidth(40)
-        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        menu_btn.clicked.connect(self._show_menu)
-        top_row.addWidget(menu_btn)
-        layout.addLayout(top_row)
+        info = QVBoxLayout()
+        info.setSpacing(5)
 
-        detail_text = f"{device_info['device_code']}\n{device_info['ip']}:{device_info['port']}"
-        detail_label = QLabel(detail_text)
-        detail_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
-        layout.addWidget(detail_label)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_label = QLabel(device_info["name"])
+        name_label.setStyleSheet(
+            f"color: {theme_colors['text']}; font-size: 15px; font-weight: 700; background: transparent;"
+        )
+        name_row.addWidget(name_label)
+
+        # Status chip: green "Online" / grey "Offline"
+        self.status_label = QLabel("● Online" if online else "○ Offline")
+        self.status_label.setStyleSheet(
+            f"color: {status_color}; background-color: {_hex_to_rgba(status_color if online else '#888888', 0.16)}; "
+            "border-radius: 9px; padding: 2px 9px; font-size: 11px; font-weight: 600;"
+        )
+        name_row.addWidget(self.status_label)
+        name_row.addStretch()
+        info.addLayout(name_row)
+
+        code_label = QLabel(device_info["device_code"])
+        code_label.setStyleSheet(
+            f"color: {theme_colors['text']}; background-color: rgba({_T}, 0.07); "
+            "border-radius: 6px; padding: 2px 8px; font-family: Consolas, 'DejaVu Sans Mono', monospace; "
+            "font-size: 12px;"
+        )
+        code_row = QHBoxLayout()
+        code_row.addWidget(code_label)
+        code_row.addStretch()
+        info.addLayout(code_row)
+
+        addr_label = QLabel(f"{device_info['ip']}:{device_info['port']}")
+        addr_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px; background: transparent;")
+        info.addWidget(addr_label)
 
         if not online:
             seconds = int(device_info["seconds_since_seen"])
             self.status_text_label = QLabel(f"Offline · last seen {seconds}s ago")
         else:
             self.status_text_label = QLabel("Same Network")
-        self.status_text_label.setStyleSheet(f"color: {status_color}; font-size: 12px;")
-        layout.addWidget(self.status_text_label)
+        self.status_text_label.setStyleSheet(
+            f"color: {accent if online else theme_colors['text_dim']}; font-size: 12px; "
+            "font-weight: 600; background: transparent;"
+        )
+        info.addWidget(self.status_text_label)
 
-        self.hover_hint = QLabel("Open LocalShare →")
-        self.hover_hint.setStyleSheet(f"color: {theme_colors['accent']}; font-size: 11px;")
+        self.hover_hint = QLabel("Click to open LocalShare →")
+        self.hover_hint.setStyleSheet(f"color: {accent}; font-size: 11px; background: transparent;")
         self.hover_hint.hide()
-        layout.addWidget(self.hover_hint)
+        info.addWidget(self.hover_hint)
+        outer.addLayout(info, stretch=1)
+
+        # Plain QPushButton on purpose (NOT HoverGlowButton): nesting a
+        # widget that has its own graphics effect inside this shadowed
+        # card makes it render invisible (confirmed by testing earlier).
+        menu_btn = QPushButton("⋮")
+        menu_btn.setFixedSize(34, 34)
+        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu_btn.setStyleSheet(
+            f"""
+            QPushButton {{ background-color: rgba({_T}, 0.06); color: {theme_colors['text']};
+                border: 1px solid rgba({_T}, 0.12); border-radius: 17px; font-size: 16px; font-weight: 700; }}
+            QPushButton:hover {{ background-color: rgba({_T}, 0.14); border: 1px solid {_hex_to_rgba(accent, 0.6)}; }}
+            """
+        )
+        menu_btn.clicked.connect(self._show_menu)
+        self._menu_btn = menu_btn
+        outer.addWidget(menu_btn, alignment=Qt.AlignmentFlag.AlignTop)
 
     def enterEvent(self, event) -> None:
         self.hover_hint.show()
@@ -235,12 +331,14 @@ class _DeviceCard(QFrame):
 
     def _show_menu(self) -> None:
         menu = QMenu(self)
+        menu.setStyleSheet(_menu_qss(self.theme_colors))
         menu.addAction("Open", self._open_device)
         menu.addAction("View Details", self._show_details)
+        menu.addSeparator()
         menu.addAction("Copy Address", self._copy_address)
         menu.addAction("Copy Device Code", self._copy_code)
         menu.addAction("Test Connection", self._start_connection_test)
-        menu.exec(self.mapToGlobal(self.rect().center()))
+        menu.exec(self._menu_btn.mapToGlobal(self._menu_btn.rect().bottomLeft()))
 
     def _show_details(self) -> None:
         info = self.device_info
@@ -276,10 +374,10 @@ class _DeviceCard(QFrame):
     def _on_connection_test_result(self, device_code: str, reachable: bool) -> None:
         if reachable:
             self.status_text_label.setText("✓ Online — server responded")
-            self.status_text_label.setStyleSheet(f"color: {self.theme_colors['accent']}; font-size: 12px;")
+            self.status_text_label.setStyleSheet(f"color: #34D399; font-size: 12px; font-weight: 600; background: transparent;")
         else:
             self.status_text_label.setText("⚠ Discovered but server unavailable")
-            self.status_text_label.setStyleSheet(f"color: #F87171; font-size: 12px;")
+            self.status_text_label.setStyleSheet(f"color: #F87171; font-size: 12px; font-weight: 600; background: transparent;")
 
 
 class NearbyDevicesDialog(QDialog):
@@ -287,141 +385,176 @@ class NearbyDevicesDialog(QDialog):
         super().__init__(parent)
         self.discovery_service = discovery_service
         self.theme_colors = theme_colors
+        _set_tint(theme_colors)
         self._cards: list[_DeviceCard] = []
         self._global_lookup_worker: _GlobalLookupWorker | None = None
 
         self.setWindowTitle("Nearby Devices")
-        self.setMinimumSize(420, 480)
-        self.setStyleSheet(
+        self.setMinimumSize(480, 600)
+        self.resize(500, 660)
+        accent = theme_colors["accent"]
+        self.setStyleSheet(f"QDialog {{ background-color: {theme_colors['bg']}; }}")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(12)
+
+        # ---- header: title + live status pill + refresh ----
+        header_row = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        self.status_header = QLabel("Nearby Devices")
+        self.status_header.setStyleSheet(
+            f"color: {theme_colors['text']}; font-size: 24px; font-weight: 800; background: transparent;"
+        )
+        title_col.addWidget(self.status_header)
+        self.scan_status_label = QLabel("")
+        self.scan_status_label.setStyleSheet(
+            f"color: {theme_colors['text_dim']}; font-size: 12px; background: transparent;"
+        )
+        title_col.addWidget(self.scan_status_label)
+        header_row.addLayout(title_col)
+        header_row.addStretch()
+        refresh_btn = QPushButton("↻  Refresh")
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_btn.setStyleSheet(_button_qss(theme_colors))
+        refresh_btn.clicked.connect(self.refresh)
+        header_row.addWidget(refresh_btn, alignment=Qt.AlignmentFlag.AlignTop)
+        root.addLayout(header_row)
+
+        # ---- connect-by-ID panel (glass card, no graphics effect so
+        # nothing inside it can render invisibly) ----
+        connect_panel = QFrame()
+        connect_panel.setObjectName("ConnectPanel")
+        connect_panel.setStyleSheet(
             f"""
-            QDialog {{
-                background-color: {theme_colors['bg']};
+            QFrame#ConnectPanel {{
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.85)};
+                border-radius: 14px;
+                border: 1px solid rgba({_T}, 0.12);
             }}
             """
         )
+        panel_layout = QVBoxLayout(connect_panel)
+        panel_layout.setContentsMargins(16, 14, 16, 14)
+        panel_layout.setSpacing(8)
+        panel_layout.addWidget(_section_label("CONNECT BY DEVICE ID", theme_colors))
 
-        root = QVBoxLayout(self)
-
-        header_row = QHBoxLayout()
-        self.status_header = QLabel("Nearby Devices")
-        self.status_header.setStyleSheet(f"color: {theme_colors['text']}; font-size: 18px; font-weight: 600;")
-        header_row.addWidget(self.status_header)
-        header_row.addStretch()
-        refresh_btn = HoverGlowButton("↻ Refresh", glow_color=theme_colors["accent"])
-        refresh_btn.clicked.connect(self.refresh)
-        header_row.addWidget(refresh_btn)
-        root.addLayout(header_row)
-
-        self.scan_status_label = QLabel("")
-        self.scan_status_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
-        root.addWidget(self.scan_status_label)
-
-        connect_label = QLabel("CONNECT BY DEVICE ID")
-        connect_label.setStyleSheet(
-            f"color: {theme_colors['text_dim']}; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+        code_row = QHBoxLayout()
+        code_row.setSpacing(10)
+        self.code_input = QLineEdit()
+        self.code_input.setText("LS-")
+        self.code_input.setPlaceholderText("LS-XXXX-XXXX")
+        self.code_input.setMaxLength(12)
+        self.code_input.textChanged.connect(self._on_code_input_changed)
+        self.code_input.returnPressed.connect(self._connect_by_code)
+        self.code_input.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: rgba({_T}, 0.10);
+                border: 1px solid rgba({_T}, 0.12);
+                border-radius: 8px; padding: 9px 12px;
+                color: {theme_colors['text']};
+                font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 14px; letter-spacing: 1px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {_hex_to_rgba(accent, 0.85)}; }}
+            """
         )
-        root.addWidget(connect_label)
+        code_row.addWidget(self.code_input, stretch=1)
+        connect_btn = QPushButton("Connect")
+        connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        connect_btn.setStyleSheet(_button_qss(theme_colors, primary=True))
+        connect_btn.clicked.connect(self._connect_by_code)
+        code_row.addWidget(connect_btn)
+        panel_layout.addLayout(code_row)
 
         connect_hint = QLabel(
             "Works on your local network instantly. Reaching a device anywhere else on the "
             "internet needs Global Connect set up in Settings → Device."
         )
         connect_hint.setWordWrap(True)
-        connect_hint.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 10px;")
-        root.addWidget(connect_hint)
+        connect_hint.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 11px; background: transparent;")
+        panel_layout.addWidget(connect_hint)
 
-        code_row = QHBoxLayout()
-        self.code_input = QLineEdit()
-        self.code_input.setText("LS-")
-        self.code_input.setPlaceholderText("Enter Device Code (LS-XXXX-XXXX)")
-        self.code_input.textChanged.connect(self._on_code_input_changed)
-        self.code_input.setStyleSheet(
-            f"""
-            QLineEdit {{
-                background-color: {_hex_to_rgba(theme_colors['surface'], 0.5)};
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 8px;
-                padding: 8px 10px;
-                color: {theme_colors['text']};
-            }}
-            QLineEdit:focus {{
-                border: 1px solid {_hex_to_rgba(theme_colors['accent'], 0.7)};
-            }}
-            """
-        )
-        code_row.addWidget(self.code_input)
-        connect_btn = HoverGlowButton("Connect", glow_color=theme_colors["accent"])
-        connect_btn.clicked.connect(self._connect_by_code)
-        code_row.addWidget(connect_btn)
-        root.addLayout(code_row)
-
-        # A device found this way could be on this LAN (found instantly,
-        # no network round-trip needed) or reached via the global
-        # registry (a real network lookup, so it takes a moment and
-        # deserves its own status line) — this label reports whichever
-        # actually happened, never implying a global device is nearby.
-        self.connect_status_label = QLabel("")
+        # Reports whichever of LAN / global actually happened — never
+        # implies a global device is nearby.
+        self.connect_status_label = _AutoHideLabel("")
+        self.connect_status_label.hide()
         self.connect_status_label.setWordWrap(True)
-        self.connect_status_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 12px;")
-        root.addWidget(self.connect_status_label)
-
-        # Recent Devices — only visible once there's at least one, so
-        # it doesn't clutter the dialog with an empty section on first
-        # use. Reconnecting here always re-runs the normal lookup with
-        # that device's code (see _reconnect_to_recent) rather than
-        # reusing a cached address, since a device's actual address can
-        # genuinely change between visits.
-        self.recent_label = QLabel("RECENT DEVICES")
-        self.recent_label.setStyleSheet(
-            f"color: {theme_colors['text_dim']}; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+        self.connect_status_label.setStyleSheet(
+            f"color: {theme_colors['text_dim']}; font-size: 12px; background: transparent;"
         )
+        panel_layout.addWidget(self.connect_status_label)
+        root.addWidget(connect_panel)
+
+        # ---- recent devices (hidden until there is at least one) ----
+        self.recent_label = _section_label("RECENT DEVICES", theme_colors)
         self.recent_label.hide()
         root.addWidget(self.recent_label)
 
         self.recent_container = QWidget()
+        self.recent_container.setStyleSheet("background: transparent;")
         self.recent_layout = QVBoxLayout(self.recent_container)
         self.recent_layout.setContentsMargins(0, 0, 0, 0)
-        self.recent_layout.setSpacing(4)
+        self.recent_layout.setSpacing(6)
         self.recent_container.hide()
         root.addWidget(self.recent_container)
         self._recent_row_widgets: list[QWidget] = []
 
+        # ---- discovered devices ----
+        self.devices_label = _section_label("ON THIS NETWORK", theme_colors)
+        root.addWidget(self.devices_label)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setStyleSheet(
+            f"""
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
+            QScrollBar::handle:vertical {{ background: rgba({_T}, 0.22); border-radius: 4px; min-height: 30px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            """
+        )
         self.cards_container = QWidget()
         self.cards_container.setStyleSheet("background: transparent;")
         self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_layout.setContentsMargins(0, 0, 4, 8)
+        self.cards_layout.setSpacing(12)
         self.cards_layout.addStretch()
         self.scroll_area.setWidget(self.cards_container)
         root.addWidget(self.scroll_area, stretch=1)
 
-        # Wrapped in its own glass panel (matching the device cards'
-        # styling) rather than left as a bare label directly on the
-        # dialog's background — otherwise the glass look is only ever
-        # visible once at least one device has actually been found,
-        # which defeats the point of it being visible at all for
-        # someone just opening the dialog for the first time.
+        # Empty state: its own glass panel so the dialog never looks
+        # blank on first open.
         self.empty_state_panel = QFrame()
         self.empty_state_panel.setObjectName("EmptyStatePanel")
         self.empty_state_panel.setStyleSheet(
             f"""
             QFrame#EmptyStatePanel {{
-                background-color: {_hex_to_rgba(theme_colors['surface'], 0.88)};
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background-color: {_hex_to_rgba(theme_colors['surface'], 0.85)};
+                border-radius: 14px;
+                border: 1px dashed rgba({_T}, 0.18);
             }}
             """
         )
-        _apply_glass_shadow(self.empty_state_panel, blur=28, alpha=120)
         empty_state_layout = QVBoxLayout(self.empty_state_panel)
-        empty_state_layout.setContentsMargins(24, 32, 24, 32)
-
+        empty_state_layout.setContentsMargins(24, 28, 24, 28)
+        empty_state_layout.setSpacing(8)
+        empty_state_layout.addStretch()
+        empty_icon = QLabel("\U0001F4E1")
+        empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_icon.setStyleSheet("font-size: 34px; background: transparent;")
+        empty_state_layout.addWidget(empty_icon)
         self.empty_state_label = QLabel("")
         self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_state_label.setStyleSheet(f"color: {theme_colors['text_dim']}; font-size: 13px;")
+        self.empty_state_label.setWordWrap(True)
+        self.empty_state_label.setStyleSheet(
+            f"color: {theme_colors['text_dim']}; font-size: 13px; background: transparent;"
+        )
         empty_state_layout.addWidget(self.empty_state_label)
-        root.addWidget(self.empty_state_panel)
+        empty_state_layout.addStretch()
+        root.addWidget(self.empty_state_panel, stretch=1)
 
         self._auto_refresh_timer = QTimer(self)
         self._auto_refresh_timer.timeout.connect(self.refresh)
@@ -431,6 +564,8 @@ class NearbyDevicesDialog(QDialog):
         self.refresh()
 
     def refresh(self) -> None:
+        if self.discovery_service is not None and hasattr(self.discovery_service, "announce_now"):
+            self.discovery_service.announce_now()  # also tell others we're here, right now
         if self.discovery_service is None or not self.discovery_service.is_running:
             self.scan_status_label.setText("⚠ Discovery unavailable")
             self._render_devices(
@@ -459,8 +594,12 @@ class NearbyDevicesDialog(QDialog):
         devices = self.discovery_service.registry.known_devices()
         if devices:
             self.scan_status_label.setText(f"✓ Scan complete — {len(devices)} device(s) found")
+            self.scan_status_label.setStyleSheet("color: #34D399; font-size: 12px; background: transparent;")
         else:
             self.scan_status_label.setText("● Scanning local network…")
+            self.scan_status_label.setStyleSheet(
+                f"color: {self.theme_colors['text_dim']}; font-size: 12px; background: transparent;"
+            )
         self._render_devices(
             devices,
             empty_message=(
@@ -477,6 +616,9 @@ class NearbyDevicesDialog(QDialog):
 
         self.empty_state_label.setText(empty_message)
         self.empty_state_panel.setVisible(len(devices) == 0)
+        self.devices_label.setText(
+            f"ON THIS NETWORK  ·  {len(devices)}" if devices else "ON THIS NETWORK"
+        )
         self.scroll_area.setVisible(len(devices) > 0)
 
         for device in devices:
@@ -520,30 +662,45 @@ class NearbyDevicesDialog(QDialog):
 
     def _build_recent_row(self, device_code: str, name: str) -> QWidget:
         row = QFrame()
+        row.setObjectName("RecentRow")
         row.setStyleSheet(
             f"""
-            QFrame {{
-                background-color: {_hex_to_rgba(self.theme_colors['surface'], 0.5)};
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+            QFrame#RecentRow {{
+                background-color: {_hex_to_rgba(self.theme_colors['surface'], 0.7)};
+                border-radius: 10px;
+                border: 1px solid rgba({_T}, 0.08);
             }}
             """
         )
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(12, 8, 8, 8)
+        layout.setSpacing(8)
 
-        label = QLabel(f"{name}  ·  {device_code}")
-        label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 12px; border: none;")
+        label = QLabel(
+            f"<span style='font-weight:600;'>{html_escape(name)}</span>"
+            f"&nbsp;&nbsp;<span style='color:{self.theme_colors['text_dim']};'>{html_escape(device_code)}</span>"
+        )
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 12px; background: transparent;")
         layout.addWidget(label, stretch=1)
 
         connect_btn = QPushButton("Connect")
         connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        connect_btn.setStyleSheet(_button_qss(self.theme_colors))
         connect_btn.clicked.connect(lambda: self._reconnect_to_recent(device_code))
         layout.addWidget(connect_btn)
 
         remove_btn = QPushButton("✕")
-        remove_btn.setFixedWidth(28)
+        remove_btn.setFixedSize(30, 30)
+        remove_btn.setToolTip("Remove from recent")
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setStyleSheet(
+            f"""
+            QPushButton {{ background: transparent; color: {self.theme_colors['text_dim']}; border: none;
+                border-radius: 15px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: rgba(248, 113, 113, 0.2); color: #F87171; }}
+            """
+        )
         remove_btn.clicked.connect(lambda: self._remove_recent(device_code))
         layout.addWidget(remove_btn)
 

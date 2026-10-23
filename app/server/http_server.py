@@ -103,6 +103,11 @@ class ServerHandle:
         from app.server.auth_middleware import build_auth_middleware_class
 
         app.add_middleware(build_auth_middleware_class(), access_control=self.access_control)
+        # Added AFTER auth so it is the outermost layer: security headers
+        # and the cross-site check cover login redirects and 401s too.
+        from app.server.security import build_security_middleware_class
+
+        app.add_middleware(build_security_middleware_class())
 
         config = uvicorn.Config(
             app,

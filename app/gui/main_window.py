@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QTextEdit,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
@@ -69,12 +70,14 @@ from app.gui.theme import (
     theme_from_json,
 )
 from app.paths import DONATE_QR_PATH, ICON_PATH
+from app import autostart
 from app.gui.update_checker import (
     check_for_update,
     download_build,
     find_latest_build,
     open_with_default_app,
 )
+from app import github_update_checker
 from app.server.auth import AccessControl
 from app.server.http_server import ServerHandle
 from app.network.discovery_service import DeviceDiscoveryService
@@ -93,7 +96,7 @@ from app.version import APP_VERSION
 
 # Developer contact/support details — used by the About page's "Thank
 # the Developer" dialog and the first-launch appreciation prompt.
-DEVELOPER_UPI_ID = "anarkali-0@axl"
+DEVELOPER_UPI_ID = "7715838673-4@ybl"
 DEVELOPER_EMAIL = "bhargavpatil725@gmail.com"
 
 
@@ -148,6 +151,17 @@ class _UpdateCheckWorker(QThread):
         result = check_for_update(self._address, APP_VERSION)
         build_result = find_latest_build(self._address) if (result.ok and result.is_newer) else None
         self.finished.emit(result, build_result)
+
+
+class _GitHubUpdateWorker(QThread):
+    """Runs the GitHub Releases API request off the GUI thread — same
+    reasoning as _UpdateCheckWorker above, just against GitHub instead
+    of a LAN peer."""
+
+    finished = Signal(object)  # GitHubUpdateCheckResult
+
+    def run(self) -> None:
+        self.finished.emit(github_update_checker.fetch_latest_release())
 
 
 class _UpdateDownloadWorker(QThread):
@@ -322,6 +336,7 @@ class MainWindow(QMainWindow):
         # Slight delay so this doesn't compete with the splash screen /
         # initial window rendering — a background check, not a blocker.
         QTimer.singleShot(2000, self._auto_check_for_updates_on_startup)
+        QTimer.singleShot(2500, self._auto_check_github_for_updates_on_startup)
 
         if not QSettings("LocalShare", "LocalShare").value("has_shown_appreciation_prompt", False, type=bool):
             QTimer.singleShot(1500, self._show_appreciation_prompt)
@@ -439,9 +454,9 @@ class MainWindow(QMainWindow):
             self.accent_preset_buttons.append(swatch)
 
         _bg_settings = QSettings("LocalShare", "LocalShare")
-        _persisted_bg_mode = _bg_settings.value("background_mode", "solid")
+        _persisted_bg_mode = _bg_settings.value("background_mode", "gradient")
         if _persisted_bg_mode not in ("solid", "gradient", "image", "video"):
-            _persisted_bg_mode = "solid"
+            _persisted_bg_mode = "gradient"
         _persisted_gradient_style = _bg_settings.value("gradient_style", STYLES[0] if STYLES else "Sweep")
         _persisted_image_path = _bg_settings.value("image_path", "") or None
         _persisted_image_position = _bg_settings.value("image_position", "Center")
@@ -597,6 +612,18 @@ class MainWindow(QMainWindow):
         self.glass_effect_combo.currentTextChanged.connect(self._set_glass_effect)
         self._glass_effect = _persisted_glass_effect
         self._glass_temp_path = os.path.join(tempfile.gettempdir(), "localshare_glass_backdrop.png")
+        # The card's blurred backdrop is a snapshot of ITS OWN region, so
+        # it goes stale whenever the card moves or changes size WITHOUT the
+        # window itself resizing — e.g. Start Sharing adds status/PIN rows
+        # above it and the layout shifts. _glass_last_key remembers the
+        # geometry the current snapshot was taken for, and a debounced
+        # timer (fed by the event filter installed on shared_list below)
+        # re-captures when it no longer matches.
+        self._glass_last_key = None
+        self._glass_geometry_timer = QTimer(self)
+        self._glass_geometry_timer.setSingleShot(True)
+        self._glass_geometry_timer.setInterval(60)
+        self._glass_geometry_timer.timeout.connect(lambda: self._refresh_glass_backdrop(force=False))
 
         # _build_settings_dialog() is called at the end of _build_ui(),
         # once every widget it references (including the auto-update
@@ -625,6 +652,7 @@ class MainWindow(QMainWindow):
         root.addWidget(section_label)
 
         self.shared_list = QListWidget()
+        self.shared_list.installEventFilter(self)
         self.shared_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.shared_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.shared_list.customContextMenuRequested.connect(self._show_item_context_menu)
@@ -1482,7 +1510,18 @@ class MainWindow(QMainWindow):
         QSettings("LocalShare", "LocalShare").setValue("glass_effect", value)
         self._refresh_glass_backdrop()
 
-    def _refresh_glass_backdrop(self) -> None:
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 — Qt's naming convention
+        # Re-snapshot the glass card when it moves or resizes on its own
+        # (layout shifts after Start Sharing, scrolling the page, etc.).
+        if (
+            obj is getattr(self, "shared_list", None)
+            and event.type() in (QEvent.Type.Resize, QEvent.Type.Move)
+            and getattr(self, "_glass_effect", "Off") != "Off"
+        ):
+            self._glass_geometry_timer.start()
+        return super().eventFilter(obj, event)
+
+    def _refresh_glass_backdrop(self, force: bool = True) -> None:
         """
         Experimental: blurs a SNAPSHOT of whatever's currently behind
         the shared items list and uses it as that list's background —
@@ -1506,10 +1545,29 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Geometry (mapTo/size) is only meaningful once the window
+            # has actually been shown and laid out. Before that — e.g.
+            # during __init__, or while the splash screen is still
+            # playing and the window is constructed but hidden — Qt
+            # reports pre-layout defaults (position 0,0, a generic
+            # 640x480 size), and a snapshot taken from those captures
+            # the WRONG region of the background entirely (confirmed by
+            # measurement: the top-left corner instead of the card's
+            # actual position), leaving a wrong-looking card that
+            # nothing later corrects until an unrelated setting change
+            # happens to refresh it. Skipping while hidden is safe:
+            # showEvent() refreshes as soon as the window is visible.
+            if not self.isVisible():
+                return
             offset = self.shared_list.mapTo(self.gradient_background, QPoint(0, 0))
             size = self.shared_list.size()
             if size.width() <= 0 or size.height() <= 0:
                 return
+
+            key = (offset.x(), offset.y(), size.width(), size.height())
+            if not force and key == self._glass_last_key:
+                return  # snapshot already matches the card's current geometry
+            self._glass_last_key = key
 
             snapshot = self.gradient_background.capture_region(QRect(offset, size))
             if snapshot.isNull():
@@ -1539,6 +1597,7 @@ class MainWindow(QMainWindow):
             path_for_qss = self._glass_temp_path.replace("\\", "/")
             self.shared_list.setStyleSheet(
                 f"QListWidget {{ background-image: url({path_for_qss}); "
+                f"background-repeat: no-repeat; "
                 f"background-position: top left; border: {border_width}px solid {border_color}; "
                 f"border-radius: {radius_px}px; padding: 4px; }}"
             )
@@ -1743,7 +1802,7 @@ class MainWindow(QMainWindow):
             ("theme_name", "Default Dark"), ("custom_accent", ""),
             ("card_radius", "Medium"), ("card_border", "Subtle"), ("card_shadow", "None"),
             ("surface_alpha", 0.85), ("glass_effect", "Subtle"),
-            ("background_mode", "solid"), ("particle_overlay", "None"), ("gradient_style", STYLES[0]),
+            ("background_mode", "gradient"), ("particle_overlay", "None"), ("gradient_style", STYLES[0]),
             ("image_path", ""), ("video_path", ""),
             ("image_position", "Center"), ("image_scaling", "Fill"),
             ("image_opacity", 1.0), ("overlay_opacity", 0.35),
@@ -1764,10 +1823,10 @@ class MainWindow(QMainWindow):
         self.particle_overlay_combo.setCurrentText("None")
         self.image_position_combo.setCurrentText("Center")
         self.image_scaling_combo.setCurrentText("Fill")
-        self.bg_mode_solid_radio.setChecked(True)
+        self.bg_mode_gradient_radio.setChecked(True)
         self.perf_balanced_radio.setChecked(True)
         self.reduce_motion_checkbox.setChecked(False)
-        self.transparency_slider.setValue(100)
+        self.transparency_slider.setValue(int(self._surface_alpha * 100))
         self.image_opacity_slider.setValue(100)
         self.overlay_opacity_slider.setValue(35)
         self.video_loop_checkbox.setChecked(True)
@@ -1984,6 +2043,21 @@ class MainWindow(QMainWindow):
             )
         )
         layout.addWidget(self.auto_start_on_launch_checkbox)
+
+        # Distinct from the checkbox above — that one starts SHARING
+        # once the app is already open; this one launches the app
+        # itself when the computer starts, before the user has opened
+        # it at all. Hidden entirely on a platform autostart.py doesn't
+        # support (anything other than Windows/Linux), rather than
+        # showing a control that can't actually do anything.
+        if autostart.is_supported():
+            self.launch_at_startup_checkbox = QCheckBox("Launch LocalShare when my computer starts")
+            try:
+                self.launch_at_startup_checkbox.setChecked(autostart.is_enabled())
+            except OSError:
+                pass  # leave it unchecked — reflects "couldn't determine," closer to the safe default than a guess
+            self.launch_at_startup_checkbox.toggled.connect(self._on_launch_at_startup_toggled)
+            layout.addWidget(self.launch_at_startup_checkbox)
 
         self.auto_resume_shares_checkbox = QCheckBox("Automatically resume previous shares")
         self.auto_resume_shares_checkbox.setToolTip(
@@ -2253,7 +2327,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self._refresh_background_subpanel_visibility(
-            QSettings("LocalShare", "LocalShare").value("background_mode", "solid")
+            QSettings("LocalShare", "LocalShare").value("background_mode", "gradient")
         )
 
         # -- Effects page (Cards, Transparency, Glass, Motion, Performance) --------------------------------------------------------------
@@ -2367,6 +2441,66 @@ class MainWindow(QMainWindow):
 
         # -- Updates page --------------------------------------------------------------
         layout = add_page("Updates")
+
+        github_section_label = QLabel("LOCALSHARE UPDATES")
+        github_section_label.setObjectName("SectionLabel")
+        layout.addWidget(github_section_label)
+
+        current_version_label = QLabel(f"Current Version: {APP_VERSION}")
+        current_version_label.setStyleSheet(f"color: {self.theme_colors['text']}; font-size: 13px;")
+        layout.addWidget(current_version_label)
+        self._current_version_label = current_version_label  # kept for theme refresh
+
+        self.github_auto_check_checkbox = QCheckBox("Automatically check for updates")
+        self.github_auto_check_checkbox.setToolTip(
+            "Checks the official LocalShare GitHub releases once a day, in the "
+            "background — never more than that, and never blocks startup. Only "
+            "speaks up if a newer version is actually found."
+        )
+        self.github_auto_check_checkbox.setChecked(
+            QSettings("LocalShare", "LocalShare").value("github_auto_check_updates", True, type=bool)
+        )
+        self.github_auto_check_checkbox.toggled.connect(
+            lambda checked: QSettings("LocalShare", "LocalShare").setValue(
+                "github_auto_check_updates", checked
+            )
+        )
+        layout.addWidget(self.github_auto_check_checkbox)
+
+        check_now_row = QHBoxLayout()
+        self.github_check_now_btn = HoverGlowButton("Check Now", glow_color=self.theme_colors["accent"])
+        self.github_check_now_btn.clicked.connect(self._check_github_for_updates)
+        check_now_row.addWidget(self.github_check_now_btn)
+        check_now_row.addStretch()
+        layout.addLayout(check_now_row)
+
+        self.github_last_checked_label = QLabel("")
+        self.github_last_checked_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(self.github_last_checked_label)
+
+        self.github_status_label = QLabel("")
+        self.github_status_label.setWordWrap(True)
+        self.github_status_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 12px;")
+        layout.addWidget(self.github_status_label)
+
+        self.github_view_update_btn = HoverGlowButton("View Update", glow_color=self.theme_colors["accent"])
+        self.github_view_update_btn.clicked.connect(self._open_github_releases_page)
+        self.github_view_update_btn.hide()  # only shown once an update is actually known to exist
+        layout.addWidget(self.github_view_update_btn)
+
+        self._refresh_github_update_status_labels()
+
+        layout.addSpacing(12)
+        lan_section_label = QLabel("LAN UPDATE SOURCE (OPTIONAL)")
+        lan_section_label.setObjectName("SectionLabel")
+        layout.addWidget(lan_section_label)
+        lan_note = QLabel(
+            "A separate way to get updates from another LocalShare instance on your "
+            "network directly, instead of from GitHub."
+        )
+        lan_note.setWordWrap(True)
+        lan_note.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(lan_note)
         layout.addWidget(self.auto_check_updates_checkbox)
         layout.addStretch()
 
@@ -2523,6 +2657,28 @@ class MainWindow(QMainWindow):
         else:
             self.discovery_service.stop()
 
+    def _on_launch_at_startup_toggled(self, checked: bool) -> None:
+        try:
+            if checked:
+                autostart.enable()
+            else:
+                autostart.disable()
+        except OSError as exc:
+            # Revert the checkbox rather than leave it showing a state
+            # that isn't actually true — e.g. a permissions issue
+            # writing the registry key/desktop file. Blocked signals
+            # while reverting so this doesn't re-trigger the same
+            # handler right back into the failure it's recovering from.
+            self.launch_at_startup_checkbox.blockSignals(True)
+            self.launch_at_startup_checkbox.setChecked(not checked)
+            self.launch_at_startup_checkbox.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                "Couldn't change startup setting",
+                f"LocalShare couldn't {'enable' if checked else 'disable'} launching at "
+                f"startup:\n\n{exc}",
+            )
+
     def _confirm_regenerate_device_code(self) -> None:
         result = QMessageBox.question(
             self,
@@ -2591,6 +2747,187 @@ class MainWindow(QMainWindow):
 
         self._offer_update_install(result, build_result)
 
+    def _refresh_github_update_status_labels(self) -> None:
+        """Repaints the Settings > Updates page's Last Checked/Status
+        lines from cached settings — does NOT itself trigger a network
+        check. Called after any check finishes, and once when the
+        Settings dialog is first built, so the page reflects whatever
+        the last check (automatic or manual) actually found without
+        needing to re-check every time the dialog opens."""
+        settings = QSettings("LocalShare", "LocalShare")
+        last_check_time = settings.value("github_last_check_time", 0.0, type=float)
+
+        if last_check_time > 0:
+            from datetime import datetime
+
+            checked_dt = datetime.fromtimestamp(last_check_time)
+            self.github_last_checked_label.setText(f"Last checked: {checked_dt.strftime('%b %d, %I:%M %p')}")
+        else:
+            self.github_last_checked_label.setText("Last checked: never")
+
+        update_version = settings.value("github_last_known_update_version", "", type=str)
+        last_ok = settings.value("github_last_check_ok", True, type=bool)
+
+        if update_version:
+            self.github_status_label.setText(f"⚡ Version {update_version} is available")
+            self.github_view_update_btn.show()
+        elif last_check_time > 0 and not last_ok:
+            error = settings.value("github_last_check_error", "Unable to check right now", type=str)
+            self.github_status_label.setText(f"Update check: {error}")
+            self.github_view_update_btn.hide()
+        elif last_check_time > 0:
+            self.github_status_label.setText("✓ You're using the latest version")
+            self.github_view_update_btn.hide()
+        else:
+            self.github_status_label.setText("")
+            self.github_view_update_btn.hide()
+
+    def _check_github_for_updates(self) -> None:
+        self.github_check_now_btn.setEnabled(False)
+        self.github_check_now_btn.setText("Checking…")
+        self._github_update_worker = _GitHubUpdateWorker()
+        self._github_update_worker.finished.connect(
+            lambda result: self._on_github_update_check_finished(result, manual=True)
+        )
+        self._github_update_worker.start()
+
+    def _auto_check_github_for_updates_on_startup(self) -> None:
+        """Runs at most once a day (see should_check_now), in the
+        background, with no manual action needed. Stays completely
+        silent unless a genuine update is found — matching the
+        existing LAN auto-check's own "don't nag" behavior above."""
+        settings = QSettings("LocalShare", "LocalShare")
+        if not settings.value("github_auto_check_updates", True, type=bool):
+            return
+        last_check_time = settings.value("github_last_check_time", 0.0, type=float)
+        if not github_update_checker.should_check_now(last_check_time):
+            return
+
+        self._github_auto_update_worker = _GitHubUpdateWorker()
+        self._github_auto_update_worker.finished.connect(
+            lambda result: self._on_github_update_check_finished(result, manual=False)
+        )
+        self._github_auto_update_worker.start()
+
+    def _on_github_update_check_finished(self, result, manual: bool) -> None:
+        if hasattr(self, "github_check_now_btn"):
+            self.github_check_now_btn.setEnabled(True)
+            self.github_check_now_btn.setText("Check Now")
+
+        settings = QSettings("LocalShare", "LocalShare")
+        settings.setValue("github_last_check_time", time.time())
+        settings.setValue("github_last_check_ok", result.ok)
+
+        if not result.ok:
+            # Network/GitHub failures are never shown as scary errors
+            # and never treated as "update available" — LocalShare just
+            # keeps working. A manual press still gets a small,
+            # non-alarming heads-up; an automatic check stays silent.
+            settings.setValue("github_last_check_error", result.error)
+            settings.setValue("github_last_known_update_version", "")
+            if hasattr(self, "github_status_label"):
+                self._refresh_github_update_status_labels()
+            if manual:
+                QMessageBox.information(
+                    self, "Couldn't check for updates",
+                    f"{result.error}\n\nLocalShare will keep working normally.",
+                )
+            return
+
+        is_newer = github_update_checker.is_update_available(APP_VERSION, result.release)
+        settings.setValue(
+            "github_last_known_update_version", result.release.version if is_newer else ""
+        )
+        if is_newer:
+            settings.setValue("github_last_known_release_url", result.release.html_url)
+            self._latest_github_release = result.release
+
+        if hasattr(self, "github_status_label"):
+            self._refresh_github_update_status_labels()
+
+        if is_newer:
+            self._show_github_update_dialog(result.release)
+        elif manual:
+            QMessageBox.information(self, "Up to date", f"You're using the latest version (v{APP_VERSION}).")
+
+    def _open_github_releases_page(self) -> None:
+        url = QSettings("LocalShare", "LocalShare").value(
+            "github_last_known_release_url", ""
+        ) or github_update_checker.RELEASES_PAGE_URL
+        if not str(url).startswith("https://github.com/"):
+            url = github_update_checker.RELEASES_PAGE_URL
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _show_github_update_dialog(self, release) -> None:
+        """The polished 'Update Available' dialog (see section 12 of
+        the spec this implements) — current vs latest version, release
+        date, release notes, and View Update / Later. View Update opens
+        the public GitHub Releases page in the system's default
+        browser; nothing here downloads or runs anything automatically."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("LocalShare Update")
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        icon_label = QLabel("✨")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet("font-size: 32px;")
+        layout.addWidget(icon_label)
+
+        heading = QLabel("A new version is available")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {self.theme_colors['text']};")
+        layout.addWidget(heading)
+
+        version_row = QLabel(f"{APP_VERSION}  →  {release.version}")
+        version_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version_row.setStyleSheet(f"color: {self.theme_colors['accent']}; font-size: 16px; font-weight: 600;")
+        layout.addWidget(version_row)
+
+        if release.published_at:
+            try:
+                from datetime import datetime
+
+                published_dt = datetime.fromisoformat(release.published_at.replace("Z", "+00:00"))
+                released_label = QLabel(f"Released: {published_dt.strftime('%B %d, %Y')}")
+            except ValueError:
+                released_label = QLabel("")
+        else:
+            released_label = QLabel("")
+        released_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        released_label.setStyleSheet(f"color: {self.theme_colors['text_dim']}; font-size: 11px;")
+        layout.addWidget(released_label)
+
+        if release.body.strip():
+            notes_label = QLabel("What's New")
+            notes_label.setStyleSheet(
+                f"color: {self.theme_colors['text_dim']}; font-size: 11px; font-weight: 600; "
+                "letter-spacing: 1px; margin-top: 8px;"
+            )
+            layout.addWidget(notes_label)
+
+            notes_view = QTextEdit()
+            notes_view.setReadOnly(True)
+            notes_view.setPlainText(release.body.strip())
+            notes_view.setMaximumHeight(140)
+            notes_view.setStyleSheet(
+                f"background-color: {self.theme_colors['surface']}; color: {self.theme_colors['text']}; "
+                f"border: 1px solid {self.theme_colors['border']}; border-radius: 6px; font-size: 12px;"
+            )
+            layout.addWidget(notes_view)
+
+        button_row = QHBoxLayout()
+        later_btn = HoverGlowButton("Later", glow_color=self.theme_colors["accent"])
+        later_btn.clicked.connect(dialog.reject)
+        button_row.addWidget(later_btn)
+        view_update_btn = HoverGlowButton("View Update", glow_color=self.theme_colors["accent"])
+        view_update_btn.clicked.connect(lambda: (QDesktopServices.openUrl(QUrl(release.html_url)), dialog.accept()))
+        button_row.addWidget(view_update_btn)
+        layout.addLayout(button_row)
+
+        dialog.exec()
+
     def _auto_check_for_updates_on_startup(self) -> None:
         """
         Runs a background check against the last-used update source
@@ -2630,7 +2967,10 @@ class MainWindow(QMainWindow):
                 "Update available",
                 f"A newer version is available: v{result.remote_version} "
                 f"(you have v{APP_VERSION}).\n\n"
-                f"Found: {build_result.name}\n\n"
+                f"Found: {build_result.name}\n"
+                f"From: {self._last_checked_address}\n\n"
+                f"Only continue if you trust that device — the installer will "
+                f"be run on this computer.\n\n"
                 f"Download and install it now? LocalShare will close so the "
                 f"installer can run cleanly.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2691,6 +3031,18 @@ class MainWindow(QMainWindow):
             "can update cleanly — reopen it once installation finishes.",
         )
         QApplication.instance().quit()
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
+        # The window is only constructed early (main.py builds it, then
+        # a splash screen plays, THEN shows it) — so this is the first
+        # moment the glass backdrop's geometry is actually trustworthy.
+        # Two refreshes: one right after the layout has been processed,
+        # and one shortly after as a safety net for anything that
+        # settles a beat later (window manager resizing, DPI scaling).
+        super().showEvent(event)
+        if getattr(self, "_glass_effect", "Off") != "Off":
+            QTimer.singleShot(0, self._refresh_glass_backdrop)
+            QTimer.singleShot(300, self._refresh_glass_backdrop)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 — Qt's naming convention
         # Refreshes the glass-effect backdrop snapshot (if enabled) to

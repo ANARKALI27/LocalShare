@@ -16,6 +16,8 @@ import mimetypes
 import asyncio
 import os
 import time
+from html import escape as html_escape
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -24,12 +26,18 @@ from starlette.background import BackgroundTask
 
 from app.paths import WEB_DIR
 from app.server.auth import AccessControl
-from app.server.auth_middleware import COOKIE_NAME
+from app.server.auth_middleware import COOKIE_NAME, client_key, is_secure_request
 from app.server.messages import MessageStore, Attachment
 from app.server.received_log import ReceivedLog
 from app.server.transfers import TransferRegistry
 from app.version import APP_VERSION
-from app.server.security import PathSecurityError, safe_join
+from app.server.security import (
+    PathSecurityError,
+    content_disposition,
+    is_active_content,
+    safe_join,
+    safe_redirect_path,
+)
 from app.state import ShareManager
 from app.transfer.download import (
     cleanup_temp_file,
@@ -38,8 +46,8 @@ from app.transfer.download import (
     stream_file,
     stream_file_range,
 )
-from app.transfer.resumable import ResumableUploadManager
-from app.transfer.upload import resolve_upload_path, save_upload
+from app.transfer.resumable import ResumableLimitError, ResumableUploadManager
+from app.transfer.upload import resolve_upload_path, save_upload, unique_destination
 from app.utils.filesystem import list_directory
 
 # Extensions we'll actually try to render as image/video previews. Anything
@@ -52,6 +60,15 @@ PREVIEWABLE_TEXT_EXT = {
     ".log", ".ini", ".cfg", ".html", ".css", ".xml", ".sh", ".bat",
 }
 TEXT_PREVIEW_BYTES = 2000
+# The browser uploader sends 5 MB chunks; anything far beyond that is not
+# our client, and reading it whole into memory would let one request eat
+# the server's RAM.
+MAX_CHUNK_BYTES = 32 * 1024 * 1024
+# Bulk (many-small-files-in-one-request) upload limits — see /api/upload/bulk.
+BULK_MAX_BYTES = 64 * 1024 * 1024
+BULK_MAX_FILES = 1000
+MAX_ATTACHMENTS_PER_MESSAGE = 10
+MAX_MESSAGES = 5000
 
 
 def _split_path(path: str) -> list[str]:
@@ -153,9 +170,14 @@ def _file_stream_response(
     byte_range = parse_range_header(range_header, size)
 
     headers = {
-        "Content-Disposition": f'{disposition}; filename="{name}"',
+        "Content-Disposition": content_disposition(disposition, name),
         "Accept-Ranges": "bytes",
     }
+    if inline and is_active_content(name):
+        # An uploaded .html/.svg opened inline would run its script on
+        # this server's origin. "sandbox" lets it render but gives it no
+        # script and no access to the share.
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
 
     client_address = request.client.host if request.client else ""
     transfer_id = None
@@ -207,29 +229,44 @@ def build_router(
 
     # -- PIN login -----------------------------------------------------------
     @router.get("/login", response_class=HTMLResponse)
-    def login_page(next: str = "/", error: int = 0) -> HTMLResponse:
+    def login_page(next: str = "/", error: int = 0, locked: int = 0) -> HTMLResponse:
         with open(os.path.join(WEB_DIR, "login.html"), "r", encoding="utf-8") as f:
             html = f.read()
-        error_block = '<div class="login-error">Incorrect PIN — try again.</div>' if error else ""
+        if locked > 0:
+            minutes = max(1, (min(locked, 86400) + 59) // 60)
+            error_block = (
+                '<div class="login-error">Too many wrong attempts. '
+                f"Try again in about {minutes} minute{'s' if minutes != 1 else ''}.</div>"
+            )
+        elif error:
+            error_block = '<div class="login-error">Incorrect PIN — try again.</div>'
+        else:
+            error_block = ""
         html = html.replace("__ERROR_BLOCK__", error_block)
-        # "next" comes from our own redirect (a server-controlled path,
-        # not raw user input reflected back), but escape defensively
-        # anyway since it still ends up in an HTML attribute.
-        safe_next = (next or "/").replace('"', "&quot;")
+        # "next" is user-controlled (it's a query parameter), so it is
+        # validated as a same-site path AND fully HTML-escaped before it
+        # goes into the form's attribute.
+        safe_next = html_escape(safe_redirect_path(next), quote=True)
         html = html.replace("__NEXT_PATH__", safe_next)
         return HTMLResponse(html)
 
     @router.post("/login")
-    def login_submit(pin: str = Form(...), next: str = Form(default="/")):
+    def login_submit(request: Request, pin: str = Form(...), next: str = Form(default="/")):
         from fastapi.responses import RedirectResponse
 
-        if access_control.verify_pin(pin):
-            response = RedirectResponse(url=next or "/", status_code=303)
+        destination = safe_redirect_path(next)
+        ok, retry_after = access_control.attempt_pin(pin[:64], client_key(request))
+        if ok:
+            response = RedirectResponse(url=destination, status_code=303)
             response.set_cookie(
-                COOKIE_NAME, access_control.token, httponly=True, samesite="lax"
+                COOKIE_NAME, access_control.token, httponly=True, samesite="lax",
+                secure=is_secure_request(request),
             )
             return response
-        return RedirectResponse(url=f"/login?next={next or '/'}&error=1", status_code=303)
+        quoted = quote(destination, safe="/")
+        if retry_after > 0:
+            return RedirectResponse(url=f"/login?next={quoted}&locked={retry_after}", status_code=303)
+        return RedirectResponse(url=f"/login?next={quoted}&error=1", status_code=303)
 
     @router.get("/api/status")
     def status() -> dict:
@@ -392,7 +429,7 @@ def build_router(
         zip_size = os.path.getsize(zip_path)
 
         headers = {
-            "Content-Disposition": f'attachment; filename="{name}.zip"',
+            "Content-Disposition": content_disposition("attachment", f"{name}.zip"),
             "Content-Length": str(zip_size),
         }
         client_address = request.client.host if request.client else ""
@@ -430,6 +467,9 @@ def build_router(
             rel_path_list = json.loads(relative_paths)
         except (json.JSONDecodeError, TypeError):
             rel_path_list = []
+        if not isinstance(rel_path_list, list):
+            rel_path_list = []
+        rel_path_list = [p if isinstance(p, str) else "" for p in rel_path_list]
 
         client_address = request.client.host if request.client else ""
         results = []
@@ -482,6 +522,99 @@ def build_router(
             "results": results,
         }
 
+    # -- bulk upload: many small files in ONE request --------------------------------
+    @router.post("/api/upload/bulk")
+    async def upload_bulk(request: Request, item: str = Query(...), path: str = Query(default="")) -> dict:
+        """
+        Fast path for folders with thousands of small files. The body is
+        a tiny binary container instead of multipart/form-data (whose
+        per-part parsing is the slow bit in Python):
+
+            [4 bytes big-endian N][N bytes UTF-8 JSON header][file bytes...]
+
+        header = {"files": [{"p": "dir/name.ext", "s": size_in_bytes}, ...]}
+        and the file bytes follow back to back in the same order. Every
+        path still goes through resolve_upload_path/safe_join exactly
+        like the regular upload, names are sanitized, existing files are
+        never overwritten, and the whole batch is written by ONE worker
+        thread call instead of one event-loop round trip per file.
+        """
+        if not item:
+            raise HTTPException(status_code=400, detail="Choose a shared folder before uploading — can't upload to Home")
+        target_dir, _name = _resolve_target(share_manager, item, path)
+        if not os.path.isdir(target_dir):
+            raise HTTPException(status_code=400, detail="Upload destination must be a folder")
+
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > BULK_MAX_BYTES + 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Batch too large")
+        body = bytearray()
+        async for part in request.stream():
+            body += part
+            if len(body) > BULK_MAX_BYTES + 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Batch too large")
+
+        try:
+            header_len = int.from_bytes(body[:4], "big")
+            header = json.loads(bytes(body[4:4 + header_len]).decode("utf-8"))
+            entries = header["files"]
+            if not isinstance(entries, list) or len(entries) > BULK_MAX_FILES:
+                raise ValueError("bad file list")
+            plan = []
+            offset = 4 + header_len
+            for e in entries:
+                rel, size = e["p"], e["s"]
+                if not isinstance(rel, str) or not isinstance(size, int) or size < 0:
+                    raise ValueError("bad entry")
+                plan.append((rel, offset, size))
+                offset += size
+            if offset != len(body):
+                raise ValueError("size mismatch")
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(status_code=400, detail="Malformed bulk upload")
+
+        client_address = request.client.host if request.client else ""
+        view = memoryview(body)
+
+        def write_all() -> list[dict]:
+            results = []
+            made_dirs: set[str] = set()
+            for rel, start, size in plan:
+                try:
+                    destination = resolve_upload_path(target_dir, rel)
+                except PathSecurityError:
+                    results.append({"name": rel, "ok": False, "error": "invalid path"})
+                    continue
+                try:
+                    folder = os.path.dirname(destination)
+                    if folder not in made_dirs:
+                        os.makedirs(folder, exist_ok=True)
+                        made_dirs.add(folder)
+                    destination = unique_destination(destination)
+                    with open(destination, "wb") as out:
+                        out.write(view[start:start + size])
+                    results.append({"name": os.path.basename(destination), "ok": True, "bytes": size, "_path": destination})
+                except OSError as exc:
+                    results.append({"name": rel, "ok": False, "error": str(exc)})
+            return results
+
+        loop = asyncio.get_event_loop()
+        transfer_id = transfer_registry.start_transfer(
+            "upload", f"{len(plan)} files", len(body), client_address
+        )
+        try:
+            results = await loop.run_in_executor(None, write_all)
+        finally:
+            transfer_registry.finish_transfer(transfer_id)
+            del view
+
+        for r in results:
+            path_on_disk = r.pop("_path", None)
+            if r["ok"] and path_on_disk:
+                received_log.record(r["name"], r["bytes"], client_address, path_on_disk)
+        failed = [r for r in results if not r["ok"]]
+        return {"uploaded": len(results) - len(failed), "failed": len(failed), "results": results}
+
     # -- resumable uploads (for large files — see resumable.py) -----------------
     @router.post("/api/upload/create-folder")
     def create_empty_folder(
@@ -506,7 +639,10 @@ def build_router(
         if not relative_path:
             raise HTTPException(status_code=400, detail="relative_path is required")
 
-        folder_path = resolve_upload_path(target_dir, relative_path)
+        try:
+            folder_path = resolve_upload_path(target_dir, relative_path)
+        except PathSecurityError:
+            raise HTTPException(status_code=403, detail="Invalid path")
         try:
             os.makedirs(folder_path, exist_ok=True)
         except OSError as exc:
@@ -531,10 +667,19 @@ def build_router(
             raise HTTPException(status_code=400, detail="Upload destination must be a folder")
         if total_size < 0:
             raise HTTPException(status_code=400, detail="Invalid total_size")
+        try:
+            # Validate the destination now, so a bad path is rejected up
+            # front instead of failing after gigabytes were uploaded.
+            resolve_upload_path(target_dir, relative_path or filename)
+        except PathSecurityError:
+            raise HTTPException(status_code=403, detail="Invalid path")
 
-        session = resumable_manager.start_session(
-            item, target_dir, relative_path or filename, total_size
-        )
+        try:
+            session = resumable_manager.start_session(
+                item, target_dir, relative_path or filename, total_size
+            )
+        except ResumableLimitError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
         # Reuses the resumable session's own id as the transfer_id, so
         # cancelling this transfer (from the Transfers page) and
         # cancelling the resumable session (the existing DELETE
@@ -560,7 +705,15 @@ def build_router(
 
     @router.put("/api/upload/chunk/{upload_id}")
     async def upload_chunk(upload_id: str, request: Request, offset: int = Query(...)) -> dict:
-        data = await request.body()
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_CHUNK_BYTES:
+            raise HTTPException(status_code=413, detail="Chunk too large")
+        data = bytearray()
+        async for part in request.stream():
+            data += part
+            if len(data) > MAX_CHUNK_BYTES:
+                raise HTTPException(status_code=413, detail="Chunk too large")
+        data = bytes(data)
         loop = asyncio.get_event_loop()
         try:
             # The actual disk write is a blocking call — running it via
@@ -589,6 +742,8 @@ def build_router(
             raise HTTPException(status_code=404, detail="Unknown or expired upload session")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+        except PathSecurityError:
+            raise HTTPException(status_code=403, detail="Invalid path")
         transfer_registry.finish_transfer(upload_id)
         client_address = request.client.host if request.client else ""
         received_log.record(
@@ -616,7 +771,15 @@ def build_router(
 
     @router.get("/api/received")
     def get_received_files() -> dict:
-        return {"received": received_log.all_entries()}
+        # The log keeps the full on-disk path for the desktop app, but the
+        # browser has no use for it and it would reveal the host's folder
+        # layout (user name, drives) to anyone with the link.
+        return {
+            "received": [
+                {k: v for k, v in entry.items() if k != "path"}
+                for entry in received_log.all_entries()
+            ]
+        }
 
     @router.post("/api/transfers/{transfer_id}/cancel")
     def cancel_transfer(transfer_id: str) -> dict:
@@ -668,9 +831,11 @@ def build_router(
         if not text.strip() and not files:
             raise HTTPException(status_code=400, detail="Message needs text or an attachment")
 
+        if message_store.latest_id() >= MAX_MESSAGES:
+            raise HTTPException(status_code=429, detail="Message limit reached for this session")
         msg = message_store.add_message(sender, text)
 
-        for uf in files:
+        for uf in files[:MAX_ATTACHMENTS_PER_MESSAGE]:
             if not uf.filename:
                 continue
             dest = message_store.attachment_dest_path(msg.id, uf.filename)

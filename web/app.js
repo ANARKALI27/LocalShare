@@ -334,35 +334,219 @@ async function uploadFileResumable(file, relativePath, item, path, onProgress) {
   return await finalizeRes.json();
 }
 
-async function uploadFiles(fileList) {
-  const files = Array.from(fileList);
-  if (files.length === 0) return;
+// -- fast bulk upload ------------------------------------------------------------------
+//
+// Uploading a big folder file-by-file with the resumable protocol costs
+// three round trips PER FILE (start, chunk, finalize) and runs them one
+// after another — for thousands of small files the per-request overhead
+// dwarfs the actual data, which is why 10-15k files crawled. So:
+//   * small files are packed into batches and sent many-per-request
+//     through the plain /upload endpoint, with several batches in flight
+//     at once;
+//   * big files still use the chunked, resumable protocol (they're worth
+//     the resume ability, and the overhead is negligible for them).
+const SMALL_FILE_LIMIT = 8 * 1024 * 1024; // files up to 8 MB go in batches
+const BATCH_MAX_FILES = 500;              // server accepts up to 1000 per batch
+const BATCH_MAX_BYTES = 24 * 1024 * 1024; // keeps each request's memory/time bounded
+const BATCH_CONCURRENCY = 6;              // batches in flight at once (browsers allow ~6 connections per host)
+
+// Batches use a compact binary container (/api/upload/bulk) instead of
+// multipart/form-data — multipart parsing on the server is the slow part
+// for thousands of tiny files (measured ~11x faster). If an older server
+// without that endpoint answers 404/405, this flips to false and batches
+// fall back to the regular multipart /upload automatically.
+let useBulkEndpoint = true;
+
+function formatDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 60) return `${Math.ceil(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function packBatches(entries) {
+  const batches = [];
+  let current = [];
+  let currentBytes = 0;
+  for (const entry of entries) {
+    if (
+      current.length > 0 &&
+      (current.length >= BATCH_MAX_FILES || currentBytes + entry.file.size > BATCH_MAX_BYTES)
+    ) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(entry);
+    currentBytes += entry.file.size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+function buildBulkBody(batch) {
+  // [4-byte big-endian header length][JSON header][file bytes, in order]
+  const header = new TextEncoder().encode(
+    JSON.stringify({ files: batch.map((e) => ({ p: e.relativePath, s: e.file.size })) })
+  );
+  const lenBytes = new Uint8Array(4);
+  new DataView(lenBytes.buffer).setUint32(0, header.length, false);
+  // A Blob just references the File objects — nothing is copied into
+  // memory until the browser streams it out.
+  return new Blob([lenBytes, header, ...batch.map((e) => e.file)]);
+}
+
+async function sendBatchOnce(batch, item, path) {
+  if (useBulkEndpoint) {
+    const params = new URLSearchParams({ item, path });
+    const res = await fetch(`/api/upload/bulk?${params.toString()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: buildBulkBody(batch),
+    });
+    if (res.status !== 404 && res.status !== 405) return res;
+    useBulkEndpoint = false; // older server — use multipart from now on
+  }
+  const form = new FormData();
+  form.append("item", item);
+  form.append("path", path);
+  form.append("relative_paths", JSON.stringify(batch.map((e) => e.relativePath)));
+  for (const e of batch) form.append("files", e.file, e.file.name);
+  return fetch("/upload", { method: "POST", body: form });
+}
+
+async function uploadBatch(batch, item, path) {
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await sendBatchOnce(batch, item, path);
+      if (res.ok) return await res.json();
+      if (res.status >= 400 && res.status < 500) {
+        const body = await res.json().catch(() => ({}));
+        throw Object.assign(new Error(body.detail || `Upload failed (${res.status})`), { fatal: true });
+      }
+      lastError = new Error(`Server error (${res.status})`);
+    } catch (err) {
+      if (err.fatal) throw err;
+      lastError = err; // network drop — worth another try
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+  }
+  throw lastError || new Error("Upload failed");
+}
+
+/**
+ * Shared by every way of starting an upload (file picker, folder
+ * picker, drag-and-drop). entries = [{ file, relativePath }].
+ */
+async function uploadMany(entries, emptyFolders = []) {
+  const item = currentBrowseItem;
+  const path = currentBrowsePath;
+  const totalItems = entries.length + emptyFolders.length;
+  if (totalItems === 0) return;
 
   uploadFilesInput.disabled = true;
   uploadFolderInput.disabled = true;
 
-  let succeeded = 0;
   const failures = [];
+  let succeeded = 0;
+  let doneFiles = 0;
+  let doneBytes = 0;
+  let inFlightLargeBytes = 0;
+  const totalFiles = entries.length;
+  const totalBytes = entries.reduce((n, e) => n + e.file.size, 0);
+  const startedAt = performance.now();
+  let lastPaint = 0;
 
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const relativePath = file.webkitRelativePath || file.name;
+  function paint(force = false) {
+    const now = performance.now();
+    if (!force && now - lastPaint < 150) return; // don't thrash the DOM on every tiny file
+    lastPaint = now;
+    const bytes = doneBytes + inFlightLargeBytes;
+    const elapsed = (now - startedAt) / 1000;
+    const speed = elapsed > 0.5 ? bytes / elapsed : 0;
+    const remaining = speed > 0 ? (totalBytes - bytes) / speed : NaN;
+    let text = `Uploading ${doneFiles.toLocaleString()}/${totalFiles.toLocaleString()} files · ` +
+      `${formatSize(bytes)} / ${formatSize(totalBytes)}`;
+    if (speed > 0) text += ` · ${formatSize(speed)}/s`;
+    const eta = formatDuration(remaining);
+    if (eta && doneFiles < totalFiles) text += ` · ~${eta} left`;
+    uploadStatusEl.textContent = text;
+  }
 
+  // Empty folders first (a handful of tiny requests).
+  for (let i = 0; i < emptyFolders.length; i++) {
     try {
-      await uploadFileResumable(file, relativePath, currentBrowseItem, currentBrowsePath, (sent, total) => {
-        const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
-        uploadStatusEl.textContent = `Uploading ${i + 1}/${files.length}: ${file.name} — ${pct}%`;
-      });
+      uploadStatusEl.textContent = `Creating empty folder ${i + 1}/${emptyFolders.length}: ${emptyFolders[i]}`;
+      await createEmptyFolder(emptyFolders[i], item, path);
       succeeded++;
     } catch (err) {
-      failures.push(`${file.name}: ${err.message}`);
+      failures.push(`${emptyFolders[i]}: ${err.message}`);
     }
   }
 
+  const small = entries.filter((e) => e.file.size <= SMALL_FILE_LIMIT);
+  const large = entries.filter((e) => e.file.size > SMALL_FILE_LIMIT);
+
+  // Small files: batched, several batches at once.
+  const batches = packBatches(small);
+  let nextBatch = 0;
+  async function batchWorker() {
+    while (nextBatch < batches.length) {
+      const batch = batches[nextBatch++];
+      try {
+        const data = await uploadBatch(batch, item, path);
+        (data.results || []).forEach((r, idx) => {
+          if (r.ok) {
+            succeeded++;
+          } else {
+            failures.push(`${r.name || (batch[idx] && batch[idx].relativePath)}: ${r.error || "failed"}`);
+          }
+        });
+      } catch (err) {
+        for (const e of batch) failures.push(`${e.relativePath}: ${err.message}`);
+      }
+      doneFiles += batch.length;
+      doneBytes += batch.reduce((n, e) => n + e.file.size, 0);
+      paint();
+    }
+  }
+  // Large files: chunked + resumable, one after another (each already
+  // uses several chunks in flight). Runs ALONGSIDE the small-file
+  // batches instead of after them, so one big file at the end of a
+  // folder doesn't sit idle waiting for thousands of small ones.
+  async function largeWorker() {
+    for (const { file, relativePath } of large) {
+      try {
+        await uploadFileResumable(file, relativePath, item, path, (sent) => {
+          inFlightLargeBytes += sent - (largeProgress.get(file) || 0);
+          largeProgress.set(file, sent);
+          paint();
+        });
+        succeeded++;
+      } catch (err) {
+        failures.push(`${file.name}: ${err.message}`);
+      }
+      inFlightLargeBytes -= largeProgress.get(file) || 0;
+      largeProgress.delete(file);
+      doneFiles++;
+      doneBytes += file.size;
+      paint(true);
+    }
+  }
+  const largeProgress = new Map();
+
+  await Promise.all([
+    ...Array.from({ length: Math.min(BATCH_CONCURRENCY, Math.max(batches.length, 1)) }, () => batchWorker()),
+    largeWorker(),
+  ]);
+
   uploadStatusEl.textContent =
     failures.length > 0
-      ? `Uploaded ${succeeded}/${files.length}, ${failures.length} failed`
-      : `Uploaded ${succeeded} item${succeeded > 1 ? "s" : ""} ✓`;
+      ? `Uploaded ${succeeded.toLocaleString()}/${totalItems.toLocaleString()}, ${failures.length.toLocaleString()} failed`
+      : `Uploaded ${succeeded.toLocaleString()} item${succeeded > 1 ? "s" : ""} ✓`;
   if (failures.length > 0) {
     console.error("Upload failures:", failures);
   }
@@ -376,6 +560,12 @@ async function uploadFiles(fileList) {
   setTimeout(() => {
     uploadStatusEl.textContent = "";
   }, 6000);
+}
+
+async function uploadFiles(fileList) {
+  const files = Array.from(fileList);
+  if (files.length === 0) return;
+  await uploadMany(files.map((file) => ({ file, relativePath: file.webkitRelativePath || file.name })));
 }
 
 uploadFilesInput.addEventListener("change", (e) => uploadFiles(e.target.files));
@@ -418,10 +608,108 @@ mainContentEl.addEventListener("drop", (e) => {
     // sense inside an actual shared folder, not at the Home root.
     return;
   }
-  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-    uploadFiles(e.dataTransfer.files);
+  if (!e.dataTransfer) return;
+
+  const items = e.dataTransfer.items;
+  const canReadEntries = items && items.length > 0 &&
+    typeof items[0].webkitGetAsEntry === "function";
+
+  if (!canReadEntries) {
+    // Fallback for browsers without the entries API — this is what
+    // the drop handler always did before: a flat file list, which
+    // works fine for plain file drops but can't see into a dropped
+    // folder's contents at all.
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      uploadFiles(e.dataTransfer.files);
+    }
+    return;
   }
+
+  // Multiple items — files, folders, or a mix — can be dropped at
+  // once. Each top-level item becomes its own entry (a FileSystemEntry:
+  // either a file entry directly, or a directory entry that needs
+  // recursing into), and every entry is walked in parallel; the actual
+  // upload only starts once every one of them has finished collecting
+  // its files, so nothing is lost from folders that take longer to
+  // read than others.
+  const topLevelEntries = [];
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+    if (entry) topLevelEntries.push(entry);
+  }
+
+  Promise.all(topLevelEntries.map((entry) => collectFilesFromEntry(entry, ""))).then(
+    (groups) => {
+      const allFiles = groups.flat();
+      if (allFiles.length > 0) {
+        uploadFiles(allFiles);
+      }
+    }
+  );
 });
+
+// Recursively collects every file within a dropped entry (a single
+// file, or a folder — possibly nested arbitrarily deep) into a flat
+// array of real File objects, each tagged with webkitRelativePath so
+// the existing uploadFiles() pipeline (built for the "Upload Folder"
+// button's <input webkitdirectory>, which already relies on that same
+// property) handles a dropped folder identically to a picked one,
+// without needing its own separate code path.
+function collectFilesFromEntry(entry, pathPrefix) {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file((file) => {
+        const relativePath = pathPrefix + file.name;
+        // webkitRelativePath is normally read-only and only ever set
+        // by the browser itself for an <input webkitdirectory> pick —
+        // for a File constructed via the entries API here, it's just
+        // an ordinary empty string, and defineProperty is the standard,
+        // widely-used way to attach the same path info uploadFiles()
+        // already expects to find there.
+        Object.defineProperty(file, "webkitRelativePath", {
+          value: relativePath,
+          configurable: true,
+        });
+        resolve([file]);
+      });
+    } else if (entry.isDirectory) {
+      readAllDirectoryEntries(entry.createReader()).then((entries) => {
+        Promise.all(
+          entries.map((childEntry) =>
+            collectFilesFromEntry(childEntry, pathPrefix + entry.name + "/")
+          )
+        ).then((groups) => resolve(groups.flat()));
+      });
+    } else {
+      resolve([]);
+    }
+  });
+}
+
+// FileSystemDirectoryReader.readEntries() only returns entries in
+// batches (the exact batch size is left up to the browser, but it is
+// NOT guaranteed to return everything in one call) — the documented,
+// correct way to read a full directory is to keep calling it until it
+// resolves with an empty array. Skipping this and calling it only
+// once — an easy mistake, since it looks like it should just return
+// everything — silently truncates any folder large enough to need
+// more than one batch.
+function readAllDirectoryEntries(reader) {
+  let allEntries = [];
+  function readBatch() {
+    return new Promise((resolve) => {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(allEntries);
+        } else {
+          allEntries = allEntries.concat(batch);
+          resolve(readBatch());
+        }
+      });
+    });
+  }
+  return readBatch();
+}
 
 
 // -- folder upload, including genuinely empty subfolders -----------------------------------------------------------
@@ -438,16 +726,28 @@ mainContentEl.addEventListener("drop", (e) => {
 // difference is whether empty folders come along for the ride.
 
 async function walkDirectoryHandle(dirHandle, relativePrefix, files, emptyFolders) {
+  // getFile() on thousands of files one-at-a-time is slow, so each
+  // directory's files are resolved in parallel (in modest groups).
+  const fileJobs = [];
+  const subdirs = [];
   let hasEntries = false;
   for await (const [name, handle] of dirHandle.entries()) {
     hasEntries = true;
     const entryPath = relativePrefix ? `${relativePrefix}/${name}` : name;
     if (handle.kind === "file") {
-      const file = await handle.getFile();
-      files.push({ file, relativePath: entryPath });
+      fileJobs.push({ handle, entryPath });
     } else if (handle.kind === "directory") {
-      await walkDirectoryHandle(handle, entryPath, files, emptyFolders);
+      subdirs.push({ handle, entryPath });
     }
+  }
+  const GROUP = 64;
+  for (let i = 0; i < fileJobs.length; i += GROUP) {
+    const group = fileJobs.slice(i, i + GROUP);
+    const resolved = await Promise.all(group.map((j) => j.handle.getFile()));
+    resolved.forEach((file, idx) => files.push({ file, relativePath: group[idx].entryPath }));
+  }
+  for (const { handle, entryPath } of subdirs) {
+    await walkDirectoryHandle(handle, entryPath, files, emptyFolders);
   }
   if (!hasEntries && relativePrefix) {
     emptyFolders.push(relativePrefix);
@@ -484,53 +784,7 @@ async function uploadFolderViaPicker() {
     return;
   }
 
-  uploadFilesInput.disabled = true;
-  uploadFolderInput.disabled = true;
-
-  let succeeded = 0;
-  const failures = [];
-
-  // Empty folders first — if a file later needs one of these as its
-  // parent directory, the upload endpoint already creates parent dirs
-  // itself, so order between the two groups doesn't actually matter
-  // for correctness, just for a sensible-looking progress readout.
-  for (let i = 0; i < emptyFolders.length; i++) {
-    const relativePath = emptyFolders[i];
-    try {
-      uploadStatusEl.textContent = `Creating empty folder ${i + 1}/${emptyFolders.length}: ${relativePath}`;
-      await createEmptyFolder(relativePath, currentBrowseItem, currentBrowsePath);
-      succeeded++;
-    } catch (err) {
-      failures.push(`${relativePath}: ${err.message}`);
-    }
-  }
-
-  for (let i = 0; i < files.length; i++) {
-    const { file, relativePath } = files[i];
-    try {
-      await uploadFileResumable(file, relativePath, currentBrowseItem, currentBrowsePath, (sent, total) => {
-        const pct = total > 0 ? Math.round((sent / total) * 100) : 0;
-        uploadStatusEl.textContent = `Uploading ${i + 1}/${files.length}: ${file.name} — ${pct}%`;
-      });
-      succeeded++;
-    } catch (err) {
-      failures.push(`${file.name}: ${err.message}`);
-    }
-  }
-
-  const totalItems = files.length + emptyFolders.length;
-  uploadStatusEl.textContent =
-    failures.length > 0
-      ? `Uploaded ${succeeded}/${totalItems}, ${failures.length} failed`
-      : `Uploaded ${succeeded} item${succeeded > 1 ? "s" : ""} ✓`;
-  if (failures.length > 0) {
-    console.error("Upload failures:", failures);
-  }
-
-  await loadListing(currentBrowseItem, currentBrowsePath);
-
-  uploadFilesInput.disabled = false;
-  uploadFolderInput.disabled = false;
+  await uploadMany(files, emptyFolders);
 }
 
 const uploadFolderLabel = document.getElementById("upload-folder-label");
@@ -671,7 +925,14 @@ async function renderFilePreview(ref, entry, myToken) {
     pre.textContent = textData.text + (textData.truncated ? "\n…" : "");
     previewPanelEl.appendChild(pre);
   } else {
-    previewPanelEl.innerHTML = `<div class="preview-empty">${entry.name}<br>${formatSize(entry.size)}</div>`;
+    // Built with textContent, not innerHTML: file names are untrusted
+    // (a name like <img onerror=...> must show as text, never run).
+    const empty = document.createElement("div");
+    empty.className = "preview-empty";
+    empty.appendChild(document.createTextNode(entry.name));
+    empty.appendChild(document.createElement("br"));
+    empty.appendChild(document.createTextNode(formatSize(entry.size)));
+    previewPanelEl.appendChild(empty);
     return;
   }
 

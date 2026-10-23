@@ -9,15 +9,25 @@
 ; separate values (this file isn't Python) and won't sync themselves.
 
 #define MyAppName "LocalShare"
-#define MyAppVersion "3.2.0"
+#define MyAppVersion "3.4.0"
 #define MyAppPublisher "ANARKALI"
 #define MyAppExeName "LocalShare.exe"
+#define MyAppURL "https://github.com/ANARKALI27/LocalShare"
 
 [Setup]
 AppId={{A6E1F2B4-3C9D-4E7A-9B2F-1234567890AB}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; Shown in Windows "Apps & features" / the installer's About box.
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}/issues
+AppUpdatesURL={#MyAppURL}/releases
+; File properties of LocalShareSetup.exe (needs four numbers).
+VersionInfoVersion={#MyAppVersion}.0
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoProductName={#MyAppName}
 ; Per-user install to AppData\Local\Programs — no admin rights needed
 ; to install or run normally. (WebDAV specifically still needs the
 ; installed LocalShare.exe launched via "Run as administrator" — that's
@@ -39,7 +49,18 @@ CloseApplicationsFilter=LocalShare.exe
 ; install finishes, which covers this without needing that API.
 OutputDir=Output
 OutputBaseFilename=LocalShareSetup
-Compression=lzma
+; Installer's own icon and the icon Windows shows in Apps & features.
+SetupIconFile=assets\localshare.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
+; MIT license is shown as a page in the wizard.
+LicenseFile=LICENSE
+; LocalShare is a 64-bit build.
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+; Windows 10 or newer (the Python 3.13 runtime bundled in the build needs it).
+MinVersion=10.0
+Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 
@@ -62,8 +83,15 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[Registry]
+; "Launch at startup" (Settings) writes a per-user Run-key value named
+; LocalShare. Without this line, uninstalling would leave that entry
+; behind, pointing at an exe that no longer exists. ValueType none = the
+; installer never creates it, it only removes it on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#MyAppName}"; ValueType: none; Flags: dontcreatekey uninsdeletevalue
+
 [Run]
-; ngrok (used for Internet/Global sharing) is managed automatically by
-; pyngrok at runtime — it downloads its own binary on first use, no
-; separate installer step needed the way cloudflared required.
+; Internet/Global sharing uses Cloudflare's cloudflared, which LocalShare
+; downloads by itself the first time Global mode is used — nothing to
+; install here.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

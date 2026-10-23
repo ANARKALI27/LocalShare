@@ -13,6 +13,7 @@ import threading
 import time
 
 from app.network.discovery import DISCOVERY_PORT, DeviceRegistry, build_announcement, parse_announcement
+from app.network.interfaces import get_ipv4_interfaces
 
 
 class DeviceDiscoveryService:
@@ -40,6 +41,7 @@ class DeviceDiscoveryService:
         self._get_address = get_address
         self.registry = DeviceRegistry()
         self._running = False
+        self._wake = threading.Event()  # set by announce_now() to broadcast immediately
         self._listen_socket: socket.socket | None = None
         self._listen_thread: threading.Thread | None = None
         self._broadcast_thread: threading.Thread | None = None
@@ -101,30 +103,72 @@ class DeviceDiscoveryService:
             parsed = parse_announcement(data)
             if parsed is None or parsed["device_code"] == self.device_code:
                 continue  # not a valid LocalShare announcement, or our own broadcast — ignore
+            # Prefer the address the packet REALLY came from over the one
+            # written inside it: a PC with several adapters (Wi-Fi, WSL,
+            # VPN...) may advertise an address on an adapter we can't
+            # reach, while the packet's source is, by definition, an
+            # address that reached us.
+            source_ip = _addr[0] if _addr and not _addr[0].startswith("127.") else parsed["ip"]
             self.registry.see(
-                parsed["device_code"], parsed["name"], parsed["ip"],
+                parsed["device_code"], parsed["name"], source_ip,
                 parsed["port"], parsed["version"], parsed["capabilities"],
             )
 
-    def _broadcast_loop(self) -> None:
-        send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        try:
-            while self._running:
-                ip = self._get_address()
-                port = self._get_port()
-                if ip and port:
-                    packet = build_announcement(
-                        self.device_code, self.name, ip, port, self.version, self.capabilities,
-                    )
+    def announce_now(self) -> None:
+        """Broadcast right away instead of waiting for the next 5s tick
+        (used by the Nearby Devices Refresh button)."""
+        self._wake.set()
+
+    def _send_announcement(self, packet: bytes) -> None:
+        """
+        Sends the announcement out of EVERY usable network adapter (see
+        interfaces.py for why a single 255.255.255.255 send isn't
+        enough), each from that adapter's own address, to both the
+        limited broadcast and that network's directed broadcast. Falls
+        back to the old single send if no adapter could be listed.
+        """
+        interfaces = get_ipv4_interfaces()
+        sent_any = False
+        for local_ip, broadcast_ip in interfaces:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.bind((local_ip, 0))  # pins the outgoing adapter
+                for target in {"255.255.255.255", broadcast_ip}:
                     try:
-                        send_socket.sendto(packet, ("<broadcast>", DISCOVERY_PORT))
+                        sock.sendto(packet, (target, DISCOVERY_PORT))
+                        sent_any = True
                     except OSError:
-                        pass  # network hiccup — skip this cycle, try again next time
-                self.registry.prune()
-                for _ in range(50):  # sleep ~5s total, but in short slices so stop() is noticed quickly
-                    if not self._running:
-                        break
-                    time.sleep(0.1)
-        finally:
-            send_socket.close()
+                        pass  # this adapter/network refused it — try the others
+            except OSError:
+                pass
+            finally:
+                sock.close()
+        if not sent_any:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.sendto(packet, ("<broadcast>", DISCOVERY_PORT))
+            except OSError:
+                pass
+            finally:
+                sock.close()
+
+    def _broadcast_loop(self) -> None:
+        while self._running:
+            ip = self._get_address()
+            port = self._get_port()
+            if ip and port:
+                packet = build_announcement(
+                    self.device_code, self.name, ip, port, self.version, self.capabilities,
+                )
+                self._send_announcement(packet)
+            self.registry.prune()
+            # ~5s between announcements, but wakes early for announce_now()
+            # and notices stop() quickly.
+            for _ in range(50):
+                if not self._running:
+                    return
+                if self._wake.wait(0.1):
+                    self._wake.clear()
+                    break
